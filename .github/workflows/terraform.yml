@@ -211,7 +211,6 @@ jobs:
           echo "cluster_name=$(terraform output -raw cluster_id || echo 'N/A')" >> $GITHUB_OUTPUT
           echo "cluster_region=$(terraform output -raw region || echo ${{ env.AWS_REGION }})" >> $GITHUB_OUTPUT
         working-directory: ./terraform
-        continue-on-error: true
 
       - name: Configure kubectl
         if: steps.outputs.outcome == 'success'
@@ -362,8 +361,4 @@ jobs:
             echo "🗑️  Infrastructure destroyed successfully!"
           elif [ "${{ needs.terraform-destroy.result }}" == "failure" ]; then
             echo "❌ Infrastructure destruction failed"
-<<<<<<< HEAD
           fi
-=======
-          fi
->>>>>>> 61f8dd21b6d1624e79abd7d2c1e3739304cd9b8f
