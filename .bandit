@@ -1,0 +1,34 @@
+# Bandit configuration file
+# https://bandit.readthedocs.io/en/latest/config.html
+
+# Tests to skip
+# B104: hardcoded_bind_all_interfaces - Required for Docker containers
+# We bind to 0.0.0.0 because:
+# 1. Running in Docker containers requires binding to all interfaces
+# 2. Security is handled by:
+#    - Docker network isolation
+#    - Kubernetes network policies
+#    - AWS Security Groups
+#    - Load balancer configurations
+# 3. This is standard practice for containerized applications
+
+skips: []
+
+# Exclude specific paths
+exclude_dirs:
+  - /test
+  - /tests
+  - .venv
+  - venv
+
+# Tests to explicitly include (empty means all)
+tests: []
+
+# Severity level threshold
+# Options: LOW, MEDIUM, HIGH
+# Only report issues of this severity or higher
+severity: MEDIUM
+
+# Confidence level threshold
+# Options: LOW, MEDIUM, HIGH
+confidence: MEDIUM

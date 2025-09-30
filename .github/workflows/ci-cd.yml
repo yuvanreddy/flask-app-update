@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
           pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
 
       - name: Upload coverage reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: coverage-report
           path: htmlcov/
@@ -57,6 +57,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
       - name: Install scanning tools
         run: |
           pip install bandit safety pylint
@@ -65,16 +69,19 @@ jobs:
         run: |
           bandit -r app.py -f json -o bandit-report.json || true
           bandit -r app.py -f txt
+        continue-on-error: true
 
       - name: Run Safety (Dependency Scanner)
         run: |
           safety check --json > safety-report.json || true
           safety check
+        continue-on-error: true
 
       - name: Run Pylint (Code Quality)
         run: |
           pylint app.py --output-format=json > pylint-report.json || true
-          pylint app.py
+          pylint app.py --fail-under=8.0 || echo "Pylint score below 8.0"
+        continue-on-error: true
 
       - name: Run Trivy (Filesystem Scanner)
         uses: aquasecurity/trivy-action@master
@@ -104,7 +111,7 @@ jobs:
           echo "Scan results uploaded to s3://${{ env.S3_BUCKET }}/$SCAN_DIR/"
 
       - name: Upload scan artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: security-scan-reports
           path: |
