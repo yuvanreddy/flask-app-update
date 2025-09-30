@@ -1,418 +1,366 @@
-name: Complete Infrastructure & Application Deployment
+terraform {
+  required_version = ">= 1.0"
 
-on:
-  workflow_dispatch:
-    inputs:
-      action:
-        description: 'Action to perform'
-        required: true
-        default: 'deploy'
-        type: choice
-        options:
-          - deploy        # Full deployment (infrastructure + app)
-          - infrastructure-only  # Only create infrastructure
-          - app-only      # Only deploy app (requires existing cluster)
-          - destroy       # Destroy everything
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.23"
+    }
+  }
 
-env:
-  APP_NAME: flask-app
-  CLOUDSMITH_ORG: your-org-name
-  CLOUDSMITH_REPO: your-repo-name
-  AWS_REGION: us-east-1
-  S3_BUCKET: flask-app-artifact
-  TF_VERSION: 1.6.0
+  # Optional: Use S3 backend for state management
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "eks-cluster/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   dynamodb_table = "terraform-state-lock"
+  # }
+}
 
-jobs:
-  # Job 1: Create EKS Infrastructure with Terraform
-  terraform-infrastructure:
-    name: Provision EKS Cluster
-    runs-on: ubuntu-latest
-    if: |
-      github.event.inputs.action == 'deploy' ||
-      github.event.inputs.action == 'infrastructure-only' ||
-      github.event.inputs.action == 'destroy'
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      Project     = var.project_name
+      ManagedBy   = "Terraform"
+      CreatedDate = formatdate("YYYY-MM-DD", timestamp())
+    }
+  }
+}
+
+# Data source for current AWS account
+data "aws_caller_identity" "current" {}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# VPC Module
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.project_name}-vpc"
+  cidr = var.vpc_cidr
+
+  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  private_subnets = var.private_subnets
+  public_subnets  = var.public_subnets
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = var.single_nat_gateway
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  # Kubernetes tags required for EKS
+  public_subnet_tags = {
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  }
+
+  tags = {
+    Name = "${var.project_name}-vpc"
+  }
+}
+
+# EKS Module
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"  # Updated to latest version to fix deprecation warnings
+
+  cluster_name    = var.cluster_name
+  cluster_version = var.kubernetes_version
+
+  cluster_endpoint_public_access  = var.cluster_endpoint_public_access
+  cluster_endpoint_private_access = var.cluster_endpoint_private_access
+
+  cluster_addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    aws-ebs-csi-driver = {
+      most_recent = true
+    }
+  }
+
+  vpc_id                   = module.vpc.vpc_id
+  subnet_ids               = module.vpc.private_subnets
+  control_plane_subnet_ids = module.vpc.private_subnets
+
+  # EKS Managed Node Group(s)
+  eks_managed_node_group_defaults = {
+    instance_types = var.node_instance_types
     
-    outputs:
-      cluster-name: ${{ steps.apply.outputs.cluster_name }}
-      cluster-endpoint: ${{ steps.apply.outputs.cluster_endpoint }}
+    attach_cluster_primary_security_group = true
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    # Enable IRSA (IAM Roles for Service Accounts)
+    iam_role_additional_policies = {
+      AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+    }
+  }
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+  eks_managed_node_groups = {
+    # Default node group
+    default = {
+      name = "ng-default"
+      
+      # Disable name prefix to avoid length issues
+      use_name_prefix = false
+      
+      # Use custom IAM role name to control length
+      iam_role_name          = "${var.project_name}-ng-role"
+      iam_role_use_name_prefix = false
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
+      min_size     = var.node_group_min_size
+      max_size     = var.node_group_max_size
+      desired_size = var.node_group_desired_size
 
-      - name: Terraform Init
-        working-directory: ./terraform
-        run: terraform init
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
+      instance_types = var.node_instance_types
+      capacity_type  = var.node_capacity_type
 
-      - name: Terraform Plan
-        if: github.event.inputs.action != 'destroy'
-        working-directory: ./terraform
-        run: |
-          terraform plan -out=tfplan
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
+      disk_size = var.node_disk_size
 
-      - name: Terraform Apply
-        if: github.event.inputs.action != 'destroy'
-        id: apply
-        working-directory: ./terraform
-        run: |
-          terraform apply -auto-approve tfplan
-          
-          # Export outputs
-          echo "cluster_name=$(terraform output -raw cluster_id)" >> $GITHUB_OUTPUT
-          echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)" >> $GITHUB_OUTPUT
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
+      labels = {
+        role        = "worker"
+        environment = var.environment
+      }
 
-      - name: Configure kubectl
-        if: github.event.inputs.action != 'destroy'
-        run: |
-          aws eks update-kubeconfig --name ${{ steps.apply.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
-          kubectl get nodes
+      tags = {
+        Name = "${var.cluster_name}-node"
+      }
+    }
 
-      - name: Save kubeconfig for later jobs
-        if: github.event.inputs.action != 'destroy'
-        run: |
-          mkdir -p $HOME/.kube
-          KUBECONFIG_BASE64=$(cat $HOME/.kube/config | base64 -w 0)
-          echo "KUBECONFIG_DATA=$KUBECONFIG_BASE64" >> $GITHUB_ENV
-          echo "$KUBECONFIG_BASE64" > kubeconfig-base64.txt
+    # Optional: Spot instances node group for cost optimization
+    spot = {
+      name = "ng-spot"
+      
+      # Disable name prefix to avoid length issues
+      use_name_prefix = false
+      
+      # Use custom IAM role name to control length
+      iam_role_name          = "${var.project_name}-ng-spot-role"
+      iam_role_use_name_prefix = false
 
-      - name: Upload kubeconfig artifact
-        if: github.event.inputs.action != 'destroy'
-        uses: actions/upload-artifact@v4
-        with:
-          name: kubeconfig
-          path: kubeconfig-base64.txt
-          retention-days: 1
+      min_size     = var.spot_node_group_min_size
+      max_size     = var.spot_node_group_max_size
+      desired_size = var.spot_node_group_desired_size
 
-      - name: Terraform Destroy
-        if: github.event.inputs.action == 'destroy'
-        working-directory: ./terraform
-        run: |
-          terraform destroy -auto-approve
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
+      instance_types = var.spot_instance_types
+      capacity_type  = "SPOT"
 
-  # Job 2: Build and Push Docker Image
-  build-and-push:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: terraform-infrastructure
-    if: |
-      github.event.inputs.action == 'deploy' ||
-      github.event.inputs.action == 'app-only'
+      disk_size = var.node_disk_size
+
+      labels = {
+        role        = "worker-spot"
+        environment = var.environment
+      }
+
+      taints = [
+        {
+          key    = "spot"
+          value  = "true"
+          effect = "NO_SCHEDULE"  # Must be uppercase with underscore
+        }
+      ]
+
+      tags = {
+        Name = "${var.cluster_name}-spot-node"
+      }
+    }
+  }
+
+  # Extend cluster security group rules
+  cluster_security_group_additional_rules = {
+    ingress_nodes_ephemeral_ports_tcp = {
+      description                = "Nodes on ephemeral ports"
+      protocol                   = "tcp"
+      from_port                  = 1025
+      to_port                    = 65535
+      type                       = "ingress"
+      source_node_security_group = true
+    }
+  }
+
+  # Extend node security group rules
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
     
-    outputs:
-      image-tag: ${{ steps.image-tag.outputs.tag }}
+    ingress_cluster_all = {
+      description                   = "Cluster to node all ports/protocols"
+      protocol                      = "-1"
+      from_port                     = 0
+      to_port                       = 0
+      type                          = "ingress"
+      source_cluster_security_group = true
+    }
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    egress_all = {
+      description      = "Node all egress"
+      protocol         = "-1"
+      from_port        = 0
+      to_port          = 0
+      type             = "egress"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+  # Enable IRSA (IAM Roles for Service Accounts)
+  enable_irsa = true
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+  tags = {
+    Name = var.cluster_name
+  }
+}
 
-      - name: Run tests
-        run: pytest tests/ -v
+# Kubernetes provider configuration
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+  }
+}
 
-      - name: Log in to Cloudsmith
-        uses: docker/login-action@v3
-        with:
-          registry: docker.cloudsmith.io
-          username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          password: ${{ secrets.CLOUDSMITH_API_KEY }}
-
-      - name: Generate image tag
-        id: image-tag
-        run: |
-          IMAGE_TAG="${{ github.sha }}"
-          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "Generated image tag: $IMAGE_TAG"
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:${{ steps.image-tag.outputs.tag }}
-            docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            APP_VERSION=${{ github.sha }}
-
-      - name: Image details
-        run: |
-          echo "✅ Image pushed successfully!"
-          echo "Repository: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}"
-          echo "Tag: ${{ steps.image-tag.outputs.tag }}"
-          echo "Latest: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:latest"
-
-  # Job 3: Deploy to Kubernetes
-  deploy-to-kubernetes:
-    name: Deploy Application
-    runs-on: ubuntu-latest
-    needs: [terraform-infrastructure, build-and-push]
-    if: |
-      github.event.inputs.action == 'deploy' ||
-      github.event.inputs.action == 'app-only'
-    environment:
-      name: production
+# Create namespaces
+resource "kubernetes_namespace" "flask_app" {
+  metadata {
+    name = "flask-app"
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    labels = {
+      name        = "flask-app"
+      environment = var.environment
+    }
+  }
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+  depends_on = [module.eks]
+}
 
-      - name: Download kubeconfig
-        if: github.event.inputs.action == 'deploy'
-        uses: actions/download-artifact@v4
-        with:
-          name: kubeconfig
+# Create Cloudsmith registry secret
+resource "kubernetes_secret" "cloudsmith_registry" {
+  metadata {
+    name      = "cloudsmith-registry"
+    namespace = kubernetes_namespace.flask_app.metadata[0].name
+  }
 
-      - name: Configure kubectl (from artifact)
-        if: github.event.inputs.action == 'deploy'
-        run: |
-          mkdir -p $HOME/.kube
-          cat kubeconfig-base64.txt | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-          kubectl cluster-info
+  type = "kubernetes.io/dockerconfigjson"
 
-      - name: Configure kubectl (existing cluster)
-        if: github.event.inputs.action == 'app-only'
-        uses: azure/k8s-set-context@v3
-        with:
-          method: kubeconfig
-          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+  data = {
+    ".dockerconfigjson" = jsonencode({
+      auths = {
+        "docker.cloudsmith.io" = {
+          username = var.cloudsmith_username
+          password = var.cloudsmith_api_key
+          auth     = base64encode("${var.cloudsmith_username}:${var.cloudsmith_api_key}")
+        }
+      }
+    })
+  }
 
-      - name: Verify cluster
-        run: |
-          echo "Testing cluster connectivity..."
-          kubectl get nodes
-          kubectl get namespaces
+  depends_on = [kubernetes_namespace.flask_app]
+}
 
-      - name: Create namespace
-        run: |
-          kubectl create namespace flask-app --dry-run=client -o yaml | kubectl apply -f -
+# IAM role for AWS Load Balancer Controller
+module "aws_load_balancer_controller_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
 
-      - name: Create registry secret
-        run: |
-          kubectl create secret docker-registry cloudsmith-registry \
-            --docker-server=docker.cloudsmith.io \
-            --docker-username=${{ secrets.CLOUDSMITH_USERNAME }} \
-            --docker-password=${{ secrets.CLOUDSMITH_API_KEY }} \
-            --namespace=flask-app \
-            --dry-run=client -o yaml | kubectl apply -f -
+  role_name = "${var.cluster_name}-aws-load-balancer-controller"
 
-      - name: Update deployment manifest
-        run: |
-          IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
-          sed -i "s|image:.*flask-app.*|image: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:${IMAGE_TAG}|g" k8s/deployment.yaml
-          echo "Updated image to: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:${IMAGE_TAG}"
+  attach_load_balancer_controller_policy = true
 
-      - name: Deploy to Kubernetes
-        run: |
-          echo "Deploying application..."
-          kubectl apply -f k8s/deployment.yaml -n flask-app
-          
-          echo ""
-          echo "Waiting for rollout to complete..."
-          kubectl rollout status deployment/${{ env.APP_NAME }} -n flask-app --timeout=5m
+  oidc_providers = {
+    ex = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
 
-      - name: Verify deployment
-        run: |
-          echo "==================================="
-          echo "Deployment Verification"
-          echo "==================================="
-          echo ""
-          echo "📦 Pods:"
-          kubectl get pods -n flask-app -o wide
-          echo ""
-          echo "🌐 Services:"
-          kubectl get services -n flask-app
-          echo ""
-          echo "📊 Deployments:"
-          kubectl get deployments -n flask-app
-          echo ""
-          echo "🔄 ReplicaSets:"
-          kubectl get replicasets -n flask-app
+  tags = {
+    Name = "${var.cluster_name}-alb-controller"
+  }
+}
 
-      - name: Wait for LoadBalancer
-        run: |
-          echo "Waiting for LoadBalancer to provision (this may take 2-3 minutes)..."
-          
-          for i in {1..60}; do
-            SERVICE_IP=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-            SERVICE_HOSTNAME=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-            
-            if [ -n "$SERVICE_IP" ] || [ -n "$SERVICE_HOSTNAME" ]; then
-              echo "✅ LoadBalancer is ready!"
-              break
-            fi
-            
-            echo "Waiting... ($i/60)"
-            sleep 5
-          done
+# IAM role for EBS CSI Driver
+module "ebs_csi_driver_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
 
-      - name: Get application URL
-        id: app-url
-        run: |
-          SERVICE_IP=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          SERVICE_HOSTNAME=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          
-          if [ -n "$SERVICE_IP" ]; then
-            APP_URL="http://$SERVICE_IP"
-          elif [ -n "$SERVICE_HOSTNAME" ]; then
-            APP_URL="http://$SERVICE_HOSTNAME"
-          else
-            APP_URL="pending"
-          fi
-          
-          echo "url=$APP_URL" >> $GITHUB_OUTPUT
-          
-          echo ""
-          echo "==================================="
-          echo "🚀 Application Deployed!"
-          echo "==================================="
-          echo "URL: $APP_URL"
-          echo "Health Check: $APP_URL/health"
-          echo "API Endpoint: $APP_URL/api/data"
-          echo "==================================="
+  role_name = "${var.cluster_name}-ebs-csi-driver"
 
-      - name: Run smoke tests
-        run: |
-          APP_URL="${{ steps.app-url.outputs.url }}"
-          
-          if [ "$APP_URL" != "pending" ]; then
-            echo "Running smoke tests..."
-            sleep 30  # Give app time to fully initialize
-            
-            echo ""
-            echo "Testing health endpoint..."
-            if curl -f -s "$APP_URL/health" > /dev/null; then
-              echo "✅ Health check passed"
-              curl -s "$APP_URL/health" | jq .
-            else
-              echo "⚠️  Health check pending - app may still be initializing"
-            fi
-            
-            echo ""
-            echo "Testing root endpoint..."
-            if curl -f -s "$APP_URL/" > /dev/null; then
-              echo "✅ Root endpoint accessible"
-            else
-              echo "⚠️  Root endpoint pending"
-            fi
-          else
-            echo "⚠️  LoadBalancer still provisioning - manual verification required"
-            echo "Check status with: kubectl get service ${{ env.APP_NAME }}-service -n flask-app"
-          fi
-        continue-on-error: true
+  attach_ebs_csi_policy = true
 
-  # Job 4: Summary
-  deployment-summary:
-    name: Deployment Summary
-    runs-on: ubuntu-latest
-    needs: [terraform-infrastructure, build-and-push, deploy-to-kubernetes]
-    if: always()
-    
-    steps:
-      - name: Deployment Summary
-        run: |
-          echo "=========================================="
-          echo "🎉 Complete Deployment Summary"
-          echo "=========================================="
-          echo ""
-          echo "Action: ${{ github.event.inputs.action }}"
-          echo ""
-          echo "Job Results:"
-          echo "  Infrastructure: ${{ needs.terraform-infrastructure.result }}"
-          echo "  Build & Push:   ${{ needs.build-and-push.result }}"
-          echo "  Deployment:     ${{ needs.deploy-to-kubernetes.result }}"
-          echo ""
-          
-          if [ "${{ needs.deploy-to-kubernetes.result }}" == "success" ]; then
-            echo "✅ Deployment completed successfully!"
-            echo ""
-            echo "Next steps:"
-            echo "1. Access your application via the LoadBalancer URL"
-            echo "2. Monitor with: kubectl get all -n flask-app"
-            echo "3. View logs: kubectl logs -f deployment/${{ env.APP_NAME }} -n flask-app"
-          else
-            echo "❌ Deployment encountered issues"
-            echo ""
-            echo "Troubleshooting:"
-            echo "1. Check workflow logs above for errors"
-            echo "2. Verify AWS credentials and permissions"
-            echo "3. Ensure Cloudsmith credentials are correct"
-            echo "4. Check cluster status: kubectl get nodes"
-          fi
-          echo ""
-          echo "=========================================="
+  oidc_providers = {
+    ex = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
+    }
+  }
 
-      - name: Save deployment info
-        if: success()
-        run: |
-          cat > deployment-info.txt <<EOF
-          Deployment Information
-          =====================
-          
-          Date: $(date)
-          Action: ${{ github.event.inputs.action }}
-          Commit: ${{ github.sha }}
-          Actor: ${{ github.actor }}
-          
-          Infrastructure: ${{ needs.terraform-infrastructure.result }}
-          Build: ${{ needs.build-and-push.result }}
-          Deployment: ${{ needs.deploy-to-kubernetes.result }}
-          
-          Commands to access:
-          kubectl get all -n flask-app
-          kubectl logs -f deployment/${{ env.APP_NAME }} -n flask-app
-          kubectl get service ${{ env.APP_NAME }}-service -n flask-app
-          EOF
-          
-          cat deployment-info.txt
+  tags = {
+    Name = "${var.cluster_name}-ebs-csi"
+  }
+}
 
-      - name: Upload deployment info
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-info
-          path: deployment-info.txt
+# Security group for application load balancer
+resource "aws_security_group" "alb" {
+  name        = "${var.cluster_name}-alb-sg"
+  description = "Security group for application load balancer"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description = "HTTP from anywhere"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS from anywhere"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Allow all outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-alb-sg"
+  }
+}
