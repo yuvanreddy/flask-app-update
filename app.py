@@ -45,7 +45,10 @@ def get_data():
 @app.route('/api/data', methods=['POST'])
 def post_data():
     data = request.get_json()
-    logger.info(f"Received data: {data}")
+
+    # Log received data safely (avoid log injection)
+    logger.info("Received POST data", extra={'data_size': len(str(data)) if data else 0})
+
     return jsonify({
         'message': 'Data received successfully',
         'data': data
