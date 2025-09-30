@@ -13,11 +13,11 @@ on:
 
 env:
   APP_NAME: flask-app
-  CLOUDSMITH_ORG: flask-sample-app  # UPDATE THIS
-  CLOUDSMITH_REPO: flask-sample-app  # UPDATE THIS
+  CLOUDSMITH_ORG: your-org-name  # UPDATE THIS
+  CLOUDSMITH_REPO: your-repo-name  # UPDATE THIS
   AWS_REGION: us-east-1
-  S3_BUCKET: flask-app-artifact  # UPDATE THIS
-  EKS_CLUSTER_NAME: flask-eks  # UPDATE THIS - should match your terraform cluster name
+  S3_BUCKET: your-scan-results-bucket  # UPDATE THIS
+  EKS_CLUSTER_NAME: my-eks-cluster  # UPDATE THIS - should match your terraform cluster name
 
 jobs:
   test:
@@ -132,7 +132,7 @@ jobs:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: [test, code-scan]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     
     outputs:
       image-tag: ${{ steps.image-tag.outputs.tag }}
@@ -216,7 +216,9 @@ jobs:
     name: Deploy to EKS
     runs-on: ubuntu-latest
     needs: build-and-push
-    if: github.ref == 'refs/heads/main'
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      github.event_name == 'workflow_dispatch'
     environment:
       name: production
     
