@@ -11,16 +11,9 @@ terraform {
       version = "~> 2.23"
     }
   }
-
-  # Optional: Use S3 backend for state management
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "eks-cluster/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-state-lock"
-  # }
 }
+
+# S3 backend configuration will be in a separate file
 
 provider "aws" {
   region = var.aws_region

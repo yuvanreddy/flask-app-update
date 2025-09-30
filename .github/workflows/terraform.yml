@@ -99,7 +99,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend-config=backend.tf
         working-directory: ./terraform
         env:
           TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
@@ -172,7 +172,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend-config=backend.tf
         working-directory: ./terraform
         env:
           TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
@@ -246,7 +246,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend-config=backend.tf
         working-directory: ./terraform
         env:
           TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
