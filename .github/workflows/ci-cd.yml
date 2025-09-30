@@ -97,17 +97,18 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+        continue-on-error: true
 
       - name: Upload scan results to S3
         run: |
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           SCAN_DIR=scans/${{ github.sha }}/$TIMESTAMP
-          
-          aws s3 cp bandit-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/bandit-report.json
-          aws s3 cp safety-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/safety-report.json
-          aws s3 cp pylint-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/pylint-report.json
-          aws s3 cp trivy-fs-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/trivy-fs-report.json
-          
+
+          aws s3 cp bandit-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/bandit-report.json || echo "S3 bucket not available - skipping upload"
+          aws s3 cp safety-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/safety-report.json || echo "S3 bucket not available - skipping upload"
+          aws s3 cp pylint-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/pylint-report.json || echo "S3 bucket not available - skipping upload"
+          aws s3 cp trivy-fs-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/trivy-fs-report.json || echo "S3 bucket not available - skipping upload"
+
           echo "Scan results uploaded to s3://${{ env.S3_BUCKET }}/$SCAN_DIR/"
 
       - name: Upload scan artifacts
@@ -183,7 +184,7 @@ jobs:
       - name: Upload image scan to S3
         run: |
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          aws s3 cp trivy-image-report.json s3://${{ env.S3_BUCKET }}/scans/${{ github.sha }}/$TIMESTAMP/trivy-image-report.json
+          aws s3 cp trivy-image-report.json s3://${{ env.S3_BUCKET }}/scans/${{ github.sha }}/$TIMESTAMP/trivy-image-report.json || echo "S3 bucket not available - skipping image scan upload"
 
   deploy:
     name: Deploy to Kubernetes
