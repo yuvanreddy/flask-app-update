@@ -24,6 +24,12 @@ on:
           - apply
           - destroy
 
+# Add permissions for the workflow
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write  # Required for uploading SARIF results
+
 env:
   AWS_REGION: us-east-1
   TF_VERSION: 1.6.0
@@ -307,6 +313,9 @@ jobs:
   security-scan:
     name: Terraform Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # Required for SARIF upload
     
     steps:
       - name: Checkout code
@@ -327,11 +336,22 @@ jobs:
           output_format: sarif
           output_file_path: checkov-results.sarif
 
-      - name: Upload Checkov results
+      - name: Upload Checkov results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: checkov-results.sarif
+        continue-on-error: true  # Don't fail if Advanced Security not enabled
+
+      - name: Upload scan results as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-scan-results
+          path: |
+            checkov-results.sarif
+            tfsec-results.json
+        continue-on-error: true
 
   notify:
     name: Notification
