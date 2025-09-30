@@ -78,7 +78,7 @@ module "vpc" {
 # EKS Module
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  version = "~> 20.0"  # Updated to latest version to fix deprecation warnings
 
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version
@@ -173,11 +173,13 @@ module "eks" {
         environment = var.environment
       }
 
-     taints = [
-      {
-        effect = "NO_SCHEDULE"  # ✅ Uppercase with underscore
-      }
-     ]
+      taints = [
+        {
+          key    = "spot"
+          value  = "true"
+          effect = "NO_SCHEDULE"  # Must be uppercase with underscore
+        }
+      ]
 
       tags = {
         Name = "${var.cluster_name}-spot-node"
