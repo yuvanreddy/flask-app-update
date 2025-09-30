@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
 import os
 import logging
+from werkzeug.exceptions import BadRequest
 
 app = Flask(__name__)
 
@@ -57,6 +58,11 @@ def post_data():
             'message': 'Data received successfully',
             'data': data
         }), 201
+
+    except BadRequest as e:
+        # Handle malformed JSON requests
+        logger.warning(f"Bad request: {request.method} {request.path}")
+        return jsonify({'error': 'Invalid JSON data'}), 400
 
     except Exception as e:
         logger.error(f"Error processing POST data: {str(e)}")
