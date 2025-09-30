@@ -1,0 +1,249 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  APP_NAME: flask-app
+  CLOUDSMITH_ORG: your-org-name
+  CLOUDSMITH_REPO: your-repo-name
+  AWS_REGION: us-east-1
+  S3_BUCKET: your-scan-results-bucket
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: htmlcov/
+
+  code-scan:
+    name: Security & Code Scanning
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install scanning tools
+        run: |
+          pip install bandit safety pylint
+
+      - name: Run Bandit (Security Scanner)
+        run: |
+          bandit -r app.py -f json -o bandit-report.json || true
+          bandit -r app.py -f txt
+
+      - name: Run Safety (Dependency Scanner)
+        run: |
+          safety check --json > safety-report.json || true
+          safety check
+
+      - name: Run Pylint (Code Quality)
+        run: |
+          pylint app.py --output-format=json > pylint-report.json || true
+          pylint app.py
+
+      - name: Run Trivy (Filesystem Scanner)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'json'
+          output: 'trivy-fs-report.json'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload scan results to S3
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          SCAN_DIR=scans/${{ github.sha }}/$TIMESTAMP
+          
+          aws s3 cp bandit-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/bandit-report.json
+          aws s3 cp safety-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/safety-report.json
+          aws s3 cp pylint-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/pylint-report.json
+          aws s3 cp trivy-fs-report.json s3://${{ env.S3_BUCKET }}/$SCAN_DIR/trivy-fs-report.json
+          
+          echo "Scan results uploaded to s3://${{ env.S3_BUCKET }}/$SCAN_DIR/"
+
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-scan-reports
+          path: |
+            *-report.json
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: [test, code-scan]
+    if: github.event_name == 'push'
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Cloudsmith
+        uses: docker/login-action@v3
+        with:
+          registry: docker.cloudsmith.io
+          username: ${{ secrets.CLOUDSMITH_USERNAME }}
+          password: ${{ secrets.CLOUDSMITH_API_KEY }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+
+      - name: Run Trivy vulnerability scanner on image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:${{ github.sha }}
+          format: 'json'
+          output: 'trivy-image-report.json'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload image scan to S3
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          aws s3 cp trivy-image-report.json s3://${{ env.S3_BUCKET }}/scans/${{ github.sha }}/$TIMESTAMP/trivy-image-report.json
+
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace flask-app --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create Cloudsmith pull secret
+        run: |
+          kubectl create secret docker-registry cloudsmith-registry \
+            --docker-server=docker.cloudsmith.io \
+            --docker-username=${{ secrets.CLOUDSMITH_USERNAME }} \
+            --docker-password=${{ secrets.CLOUDSMITH_API_KEY }} \
+            --namespace=flask-app \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/${{ env.APP_NAME }} \
+            ${{ env.APP_NAME }}=docker.cloudsmith.io/${{ env.CLOUDSMITH_ORG }}/${{ env.CLOUDSMITH_REPO }}/${{ env.APP_NAME }}:${{ github.sha }} \
+            -n flask-app
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f k8s/ -n flask-app
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.APP_NAME }} -n flask-app --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n flask-app
+          kubectl get services -n flask-app
+
+      - name: Run smoke tests
+        run: |
+          SERVICE_URL=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          if [ -z "$SERVICE_URL" ]; then
+            SERVICE_URL=$(kubectl get service ${{ env.APP_NAME }}-service -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          fi
+          
+          echo "Testing health endpoint..."
+          curl -f http://$SERVICE_URL/health || echo "Health check failed"
+
+  notify:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+      - name: Send deployment notification
+        run: |
+          echo "Deployment completed!"
+          echo "Status: ${{ needs.deploy.result }}"
