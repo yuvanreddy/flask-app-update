@@ -17,7 +17,7 @@ env:
   CLOUDSMITH_REPO: flask-sample-app
   AWS_REGION: us-east-1
   S3_BUCKET: ""  # Optional - leave empty if not using S3 for scan results
-  EKS_CLUSTER_NAME: flask-eks  # Your actual EKS cluster name
+  EKS_CLUSTER_NAME: my-eks-cluster  # Your actual EKS cluster name
 
 jobs:
   test:
