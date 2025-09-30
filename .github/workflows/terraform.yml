@@ -188,12 +188,14 @@ jobs:
 
       - name: Terraform Apply
         run: |
+          cd terraform
           if [ -f tfplan ]; then
+            echo "Using saved plan file..."
             terraform apply -input=false tfplan
           else
+            echo "No plan file found, running terraform apply with auto-approve..."
             terraform apply -auto-approve -input=false
           fi
-        working-directory: ./terraform
         env:
           TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
           TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
@@ -201,21 +203,24 @@ jobs:
       - name: Get Outputs
         id: outputs
         run: |
+          cd terraform
           echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)" >> $GITHUB_OUTPUT
           echo "cluster_name=$(terraform output -raw cluster_id)" >> $GITHUB_OUTPUT
-        working-directory: ./terraform
+          echo "kubeconfig=$(terraform output -raw kubeconfig)" >> $GITHUB_OUTPUT
 
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig --name ${{ steps.outputs.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster connection
+        run: |
           kubectl get nodes
 
       - name: Save kubeconfig as secret
         run: |
-          KUBECONFIG_BASE64=$(terraform output -raw kubeconfig | base64 -w 0)
-          echo "Save this as KUBE_CONFIG secret in GitHub:"
-          echo $KUBECONFIG_BASE64
-        working-directory: ./terraform
+          echo "KUBECONFIG_BASE64=${{ steps.outputs.outputs.kubeconfig }}" >> $GITHUB_ENV
+          echo "Save this as KUBE_CONFIG secret in GitHub repository settings:"
+          echo "KUBE_CONFIG=$(echo -n "$KUBECONFIG_BASE64" | base64 -d)"
 
   terraform-destroy:
     name: Terraform Destroy
