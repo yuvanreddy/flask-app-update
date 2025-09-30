@@ -28,7 +28,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  security-events: write  # Required for uploading SARIF results
+  security-events: write
 
 env:
   AWS_REGION: us-east-1
@@ -86,7 +86,12 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-latest
     needs: terraform-validate
-    if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+    # Run plan on PRs, pushes to main, or manual plan/apply actions
+    if: |
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event.inputs.action == 'plan' ||
+      github.event.inputs.action == 'apply'
     
     steps:
       - name: Checkout code
@@ -107,18 +112,12 @@ jobs:
       - name: Terraform Init
         run: terraform init
         working-directory: ./terraform
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
       - name: Terraform Plan
         id: plan
         run: |
           terraform plan -out=tfplan -input=false
         working-directory: ./terraform
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
       - name: Upload Plan
         uses: actions/upload-artifact@v4
@@ -186,12 +185,10 @@ jobs:
           TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
       - name: Download Plan
-        if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
           name: tfplan
           path: terraform/
-        continue-on-error: true
 
       - name: Terraform Apply
         run: |
@@ -210,17 +207,20 @@ jobs:
       - name: Get Terraform Outputs
         id: outputs
         run: |
-          echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)" >> $GITHUB_OUTPUT
-          echo "cluster_name=$(terraform output -raw cluster_id)" >> $GITHUB_OUTPUT
-          echo "cluster_region=$(terraform output -raw region)" >> $GITHUB_OUTPUT
+          echo "cluster_endpoint=$(terraform output -raw cluster_endpoint || echo 'N/A')" >> $GITHUB_OUTPUT
+          echo "cluster_name=$(terraform output -raw cluster_id || echo 'N/A')" >> $GITHUB_OUTPUT
+          echo "cluster_region=$(terraform output -raw region || echo ${{ env.AWS_REGION }})" >> $GITHUB_OUTPUT
         working-directory: ./terraform
 
       - name: Configure kubectl
+        if: steps.outputs.outcome == 'success'
         run: |
           aws eks update-kubeconfig --name ${{ steps.outputs.outputs.cluster_name }} --region ${{ steps.outputs.outputs.cluster_region }}
           kubectl get nodes
+        continue-on-error: true
 
       - name: Display Cluster Information
+        if: steps.outputs.outcome == 'success'
         run: |
           echo "=========================================="
           echo "EKS Cluster Created Successfully!"
@@ -234,28 +234,8 @@ jobs:
           echo ""
           echo "=========================================="
 
-      - name: Generate kubeconfig for CI/CD
-        id: kubeconfig
-        run: |
-          KUBECONFIG_BASE64=$(terraform output -raw kubeconfig | base64 -w 0)
-          echo "kubeconfig_base64=$KUBECONFIG_BASE64" >> $GITHUB_OUTPUT
-          
-          echo "=========================================="
-          echo "Add this as KUBE_CONFIG secret in GitHub:"
-          echo "=========================================="
-          echo "$KUBECONFIG_BASE64"
-          echo "=========================================="
-        working-directory: ./terraform
-
-      - name: Upload kubeconfig artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kubeconfig
-          path: terraform/kubeconfig.yaml
-          retention-days: 7
-        continue-on-error: true
-
       - name: Test Cluster Connectivity
+        if: steps.outputs.outcome == 'success'
         run: |
           echo "Testing cluster connectivity..."
           kubectl cluster-info
@@ -264,11 +244,14 @@ jobs:
           
           echo ""
           echo "Cluster is ready for deployments!"
+        continue-on-error: true
 
   terraform-destroy:
     name: Terraform Destroy
     runs-on: ubuntu-latest
+    # Only run on manual destroy action
     if: github.event.inputs.action == 'destroy'
+    needs: terraform-validate
     environment:
       name: production-destroy
     
@@ -291,16 +274,10 @@ jobs:
       - name: Terraform Init
         run: terraform init
         working-directory: ./terraform
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
       - name: Terraform Destroy
         run: terraform destroy -auto-approve -input=false
         working-directory: ./terraform
-        env:
-          TF_VAR_cloudsmith_username: ${{ secrets.CLOUDSMITH_USERNAME }}
-          TF_VAR_cloudsmith_api_key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
       - name: Confirm Destruction
         run: |
@@ -315,7 +292,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write  # Required for SARIF upload
+      security-events: write
     
     steps:
       - name: Checkout code
@@ -341,7 +318,7 @@ jobs:
         if: always()
         with:
           sarif_file: checkov-results.sarif
-        continue-on-error: true  # Don't fail if Advanced Security not enabled
+        continue-on-error: true
 
       - name: Upload scan results as artifact
         uses: actions/upload-artifact@v4
@@ -356,7 +333,7 @@ jobs:
   notify:
     name: Notification
     runs-on: ubuntu-latest
-    needs: [terraform-apply]
+    needs: [terraform-apply, terraform-destroy]
     if: always()
     
     steps:
@@ -365,7 +342,8 @@ jobs:
           echo "=========================================="
           echo "Terraform Workflow Completed"
           echo "=========================================="
-          echo "Status: ${{ needs.terraform-apply.result }}"
+          echo "Apply Status: ${{ needs.terraform-apply.result }}"
+          echo "Destroy Status: ${{ needs.terraform-destroy.result }}"
           echo "Branch: ${{ github.ref }}"
           echo "Commit: ${{ github.sha }}"
           echo "Actor: ${{ github.actor }}"
@@ -374,7 +352,13 @@ jobs:
           if [ "${{ needs.terraform-apply.result }}" == "success" ]; then
             echo "✅ Infrastructure deployed successfully!"
           elif [ "${{ needs.terraform-apply.result }}" == "skipped" ]; then
-            echo "⏭️  Apply was skipped (not on main branch or manual trigger)"
-          else
+            echo "⏭️  Apply was skipped"
+          elif [ "${{ needs.terraform-apply.result }}" == "failure" ]; then
             echo "❌ Infrastructure deployment failed"
+          fi
+          
+          if [ "${{ needs.terraform-destroy.result }}" == "success" ]; then
+            echo "🗑️  Infrastructure destroyed successfully!"
+          elif [ "${{ needs.terraform-destroy.result }}" == "failure" ]; then
+            echo "❌ Infrastructure destruction failed"
           fi

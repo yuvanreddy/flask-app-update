@@ -1,29 +1,40 @@
-FROM python:3.11-slim
+# Multi-stage build for smaller image size
+FROM python:3.11-slim as builder
 
 # Set working directory
 WORKDIR /app
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PORT=5000
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
+# Install dependencies
 COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY app.py .
+# Final stage
+FROM python:3.11-slim
 
 # Create non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app && \
+    chown -R appuser:appuser /app
+
+WORKDIR /app
+
+# Copy dependencies from builder
+COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+
+# Copy application code
+COPY --chown=appuser:appuser app.py .
+
+# Set environment variables
+ENV PATH=/home/appuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    FLASK_ENV=production \
+    PORT=5000
+
+# Build argument for version
+ARG APP_VERSION=latest
+ENV APP_VERSION=${APP_VERSION}
+
+# Switch to non-root user
 USER appuser
 
 # Expose port
@@ -31,7 +42,7 @@ EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/health')"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" || exit 1
 
-# Run application with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "60", "app:app"]
+# Run the application
+CMD ["python", "app.py"]

@@ -6,10 +6,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
-    }
   }
 
   # Optional: Use S3 backend for state management
@@ -28,7 +24,6 @@ provider "aws" {
   region = var.aws_region
 
   # Default tags applied to all resources
-  # IMPORTANT: Only use static values, no timestamp() or dynamic functions
   default_tags {
     tags = {
       Environment = var.environment
@@ -103,6 +98,7 @@ module "eks" {
     }
     aws-ebs-csi-driver = {
       most_recent = true
+      service_account_role_arn = module.ebs_csi_driver_irsa_role.iam_role_arn
     }
   }
 
@@ -176,7 +172,6 @@ module "eks" {
       }
 
       # Taints to prevent regular pods from scheduling on spot instances
-      # Note: Must be a list, and effect must be uppercase with underscores
       taints = [
         {
           key    = "spot"
@@ -244,56 +239,6 @@ module "eks" {
   }
 }
 
-# Kubernetes Provider - Configure after EKS cluster is created
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-  }
-}
-
-# Create Kubernetes namespace for Flask application
-resource "kubernetes_namespace" "flask_app" {
-  metadata {
-    name = "flask-app"
-    
-    labels = {
-      name        = "flask-app"
-      environment = var.environment
-    }
-  }
-
-  depends_on = [module.eks]
-}
-
-# Create Cloudsmith registry secret for pulling Docker images
-resource "kubernetes_secret" "cloudsmith_registry" {
-  metadata {
-    name      = "cloudsmith-registry"
-    namespace = kubernetes_namespace.flask_app.metadata[0].name
-  }
-
-  type = "kubernetes.io/dockerconfigjson"
-
-  data = {
-    ".dockerconfigjson" = jsonencode({
-      auths = {
-        "docker.cloudsmith.io" = {
-          username = var.cloudsmith_username
-          password = var.cloudsmith_api_key
-          auth     = base64encode("${var.cloudsmith_username}:${var.cloudsmith_api_key}")
-        }
-      }
-    })
-  }
-
-  depends_on = [kubernetes_namespace.flask_app]
-}
-
 # IAM role for AWS Load Balancer Controller
 module "aws_load_balancer_controller_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
@@ -314,6 +259,8 @@ module "aws_load_balancer_controller_irsa_role" {
     Name        = "${var.cluster_name}-alb-controller"
     Environment = var.environment
   }
+
+  depends_on = [module.eks]
 }
 
 # IAM role for EBS CSI Driver
@@ -336,6 +283,8 @@ module "ebs_csi_driver_irsa_role" {
     Name        = "${var.cluster_name}-ebs-csi"
     Environment = var.environment
   }
+
+  depends_on = [module.eks]
 }
 
 # Security group for Application Load Balancer
@@ -372,4 +321,17 @@ resource "aws_security_group" "alb" {
     Name        = "${var.cluster_name}-alb-sg"
     Environment = var.environment
   }
+}
+
+# Generate kubeconfig file for CI/CD
+resource "local_file" "kubeconfig" {
+  content = templatefile("${path.module}/kubeconfig.tpl", {
+    cluster_name     = module.eks.cluster_name
+    cluster_endpoint = module.eks.cluster_endpoint
+    cluster_ca       = module.eks.cluster_certificate_authority_data
+    aws_region       = var.aws_region
+  })
+  filename = "${path.module}/kubeconfig.yaml"
+
+  depends_on = [module.eks]
 }

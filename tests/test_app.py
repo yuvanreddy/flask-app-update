@@ -1,65 +1,71 @@
-import sys
-import os
 import pytest
 import json
-
-# Add parent directory to Python path to import app module
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from app import app
 
 @pytest.fixture
 def client():
-    """Create a test client for the Flask app"""
+    """Create test client"""
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
 
-def test_health_endpoint(client):
-    """Test the health check endpoint"""
-    response = client.get('/health')
-    assert response.status_code == 200
-    data = json.loads(response.data)
-    assert data['status'] == 'healthy'
-    assert 'version' in data
-
-def test_home_endpoint(client):
-    """Test the home endpoint"""
+def test_index(client):
+    """Test root endpoint"""
     response = client.get('/')
     assert response.status_code == 200
     data = json.loads(response.data)
     assert 'message' in data
+    assert 'version' in data
     assert 'endpoints' in data
 
-def test_get_data_endpoint(client):
-    """Test the GET /api/data endpoint"""
-    response = client.get('/api/data')
+def test_health_check(client):
+    """Test health endpoint"""
+    response = client.get('/health')
     assert response.status_code == 200
     data = json.loads(response.data)
-    assert 'data' in data
-    assert data['count'] == 3
-    assert len(data['data']) == 3
+    assert data['status'] == 'healthy'
+    assert 'timestamp' in data
+    assert 'version' in data
 
-def test_post_data_endpoint(client):
-    """Test the POST /api/data endpoint"""
-    test_data = {'name': 'Test Item', 'value': 123}
-    response = client.post('/api/data',
-                          data=json.dumps(test_data),
-                          content_type='application/json')
-    assert response.status_code == 201
+def test_info(client):
+    """Test info endpoint"""
+    response = client.get('/info')
+    assert response.status_code == 200
     data = json.loads(response.data)
-    assert data['message'] == 'Data received successfully'
-    assert data['data'] == test_data
+    assert 'application' in data
+    assert data['application'] == 'flask-app'
+    assert 'version' in data
 
-def test_404_error(client):
-    """Test 404 error handler"""
+def test_hello_default(client):
+    """Test hello endpoint with default name"""
+    response = client.get('/api/hello')
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert 'Hello, World!' in data['message']
+
+def test_hello_with_name(client):
+    """Test hello endpoint with custom name"""
+    response = client.get('/api/hello?name=John')
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert 'Hello, John!' in data['message']
+
+def test_echo(client):
+    """Test echo endpoint"""
+    test_data = {'test': 'data', 'number': 42}
+    response = client.post(
+        '/api/echo',
+        data=json.dumps(test_data),
+        content_type='application/json'
+    )
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data['received'] == test_data
+
+def test_not_found(client):
+    """Test 404 error handling"""
     response = client.get('/nonexistent')
     assert response.status_code == 404
     data = json.loads(response.data)
-    assert data['error'] == 'Not found'
-
-def test_post_without_data(client):
-    """Test POST endpoint without data"""
-    response = client.post('/api/data',
-                          content_type='application/json')
-    assert response.status_code in [400, 201]  # May vary based on implementation
+    assert data['status'] == 404
+    assert 'error' in data

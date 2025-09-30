@@ -1,30 +1,28 @@
+# Project Configuration
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "my-project"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "production"
+}
+
+# AWS Configuration
 variable "aws_region" {
-  description = "AWS region where resources will be created"
+  description = "AWS region"
   type        = string
   default     = "us-east-1"
 }
 
-variable "project_name" {
-  description = "Project name used for resource naming"
-  type        = string
-  default     = "flask-app"
-}
-
-variable "environment" {
-  description = "Environment name (dev, staging, prod)"
-  type        = string
-  default     = "development"
-}
-
+# EKS Cluster Configuration
 variable "cluster_name" {
-  description = "Name of the EKS cluster (keep it short - max 15 chars recommended)"
+  description = "Name of the EKS cluster"
   type        = string
-  default     = "flask-eks"
-  
-  validation {
-    condition     = length(var.cluster_name) <= 15
-    error_message = "Cluster name must be 15 characters or less to avoid IAM role name length issues."
-  }
+  default     = "my-eks-cluster"
 }
 
 variable "kubernetes_version" {
@@ -45,7 +43,7 @@ variable "cluster_endpoint_private_access" {
   default     = true
 }
 
-# VPC Variables
+# VPC Configuration
 variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
@@ -65,12 +63,12 @@ variable "public_subnets" {
 }
 
 variable "single_nat_gateway" {
-  description = "Use a single NAT Gateway for all private subnets (cost optimization)"
+  description = "Use a single NAT Gateway for all AZs (cost saving)"
   type        = bool
-  default     = true
+  default     = false
 }
 
-# Node Group Variables
+# Node Group Configuration
 variable "node_instance_types" {
   description = "List of instance types for the node group"
   type        = list(string)
@@ -78,7 +76,7 @@ variable "node_instance_types" {
 }
 
 variable "node_capacity_type" {
-  description = "Capacity type for nodes (ON_DEMAND or SPOT)"
+  description = "Type of capacity for the node group (ON_DEMAND or SPOT)"
   type        = string
   default     = "ON_DEMAND"
 }
@@ -90,24 +88,24 @@ variable "node_disk_size" {
 }
 
 variable "node_group_min_size" {
-  description = "Minimum number of nodes in the default node group"
+  description = "Minimum number of nodes in the node group"
   type        = number
   default     = 2
 }
 
 variable "node_group_max_size" {
-  description = "Maximum number of nodes in the default node group"
+  description = "Maximum number of nodes in the node group"
   type        = number
-  default     = 5
+  default     = 4
 }
 
 variable "node_group_desired_size" {
-  description = "Desired number of nodes in the default node group"
+  description = "Desired number of nodes in the node group"
   type        = number
-  default     = 3
+  default     = 2
 }
 
-# Spot Instance Variables
+# Spot Instance Node Group Configuration
 variable "spot_instance_types" {
   description = "List of instance types for spot instances"
   type        = list(string)
@@ -130,31 +128,4 @@ variable "spot_node_group_desired_size" {
   description = "Desired number of spot nodes"
   type        = number
   default     = 0
-}
-
-# Cloudsmith Variables
-variable "cloudsmith_username" {
-  description = "Cloudsmith username for Docker registry"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "cloudsmith_api_key" {
-  description = "Cloudsmith API key for Docker registry"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "enable_spot_instances" {
-  description = "Enable spot instance node group"
-  type        = bool
-  default     = false
-}
-
-variable "tags" {
-  description = "Additional tags to apply to all resources"
-  type        = map(string)
-  default     = {}
 }

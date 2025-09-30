@@ -1,119 +1,98 @@
-"""
-Flask REST API application with health checks and data endpoints.
-
-This module provides a simple REST API with health monitoring,
-data retrieval, and data submission capabilities.
-"""
-
+from flask import Flask, jsonify, request
 import os
 import logging
+from datetime import datetime
 
-from flask import Flask, jsonify, request
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configuration
+app.config['JSON_SORT_KEYS'] = False
+VERSION = os.getenv('APP_VERSION', 'dev')
+PORT = int(os.getenv('PORT', 5000))
 
-
-@app.route('/health', methods=['GET'])
-def health():
-    """
-    Health check endpoint.
-    
-    Returns:
-        tuple: JSON response with health status and HTTP status code 200
-    """
+@app.route('/')
+def index():
+    """Root endpoint"""
     return jsonify({
-        'status': 'healthy',
-        'service': 'flask-app',
-        'version': os.getenv('APP_VERSION', '1.0.0')
-    }), 200
-
-
-@app.route('/', methods=['GET'])
-def home():
-    """
-    Root endpoint providing API information.
-    
-    Returns:
-        tuple: JSON response with welcome message and available endpoints, HTTP 200
-    """
-    return jsonify({
-        'message': 'Welcome to Flask App',
-        'version': os.getenv('APP_VERSION', '1.0.0'),
+        'message': 'Welcome to Flask App on EKS!',
+        'version': VERSION,
+        'timestamp': datetime.utcnow().isoformat(),
         'endpoints': {
             'health': '/health',
-            'api': '/api/data'
+            'info': '/info',
+            'api': '/api/hello'
         }
-    }), 200
+    })
 
-
-@app.route('/api/data', methods=['GET'])
-def get_data():
-    """
-    Retrieve sample data.
-    
-    Returns:
-        tuple: JSON response with data array and count, HTTP status code 200
-    """
+@app.route('/health')
+def health():
+    """Health check endpoint for K8s probes"""
     return jsonify({
-        'data': [
-            {'id': 1, 'name': 'Item 1'},
-            {'id': 2, 'name': 'Item 2'},
-            {'id': 3, 'name': 'Item 3'}
-        ],
-        'count': 3
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat(),
+        'version': VERSION
     }), 200
 
+@app.route('/info')
+def info():
+    """Application information"""
+    return jsonify({
+        'application': 'flask-app',
+        'version': VERSION,
+        'environment': os.getenv('FLASK_ENV', 'production'),
+        'python_version': os.sys.version,
+        'timestamp': datetime.utcnow().isoformat()
+    })
 
-@app.route('/api/data', methods=['POST'])
-def post_data():
-    """
-    Accept and process posted data.
-    
-    Returns:
-        tuple: JSON response with success message and submitted data, HTTP 201
-    """
+@app.route('/api/hello', methods=['GET'])
+def hello():
+    """Simple API endpoint"""
+    name = request.args.get('name', 'World')
+    return jsonify({
+        'message': f'Hello, {name}!',
+        'version': VERSION,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@app.route('/api/echo', methods=['POST'])
+def echo():
+    """Echo endpoint for testing"""
     data = request.get_json()
-    logger.info("Received data: %s", data)
     return jsonify({
-        'message': 'Data received successfully',
-        'data': data
-    }), 201
-
+        'received': data,
+        'timestamp': datetime.utcnow().isoformat()
+    })
 
 @app.errorhandler(404)
-def not_found(_error):
-    """
-    Handle 404 Not Found errors.
-    
-    Args:
-        _error: The error object (unused but required by Flask)
-        
-    Returns:
-        tuple: JSON error response and HTTP status code 404
-    """
-    return jsonify({'error': 'Not found'}), 404
-
+def not_found(error):
+    """Handle 404 errors"""
+    return jsonify({
+        'error': 'Not Found',
+        'status': 404,
+        'timestamp': datetime.utcnow().isoformat()
+    }), 404
 
 @app.errorhandler(500)
-def internal_error(_error):
-    """
-    Handle 500 Internal Server Error.
-    
-    Args:
-        _error: The error object (unused but required by Flask)
-        
-    Returns:
-        tuple: JSON error response and HTTP status code 500
-    """
-    return jsonify({'error': 'Internal server error'}), 500
-
+def internal_error(error):
+    """Handle 500 errors"""
+    logger.error(f"Internal server error: {error}")
+    return jsonify({
+        'error': 'Internal Server Error',
+        'status': 500,
+        'timestamp': datetime.utcnow().isoformat()
+    }), 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', '5000'))  # pylint: disable=invalid-envvar-default
-    # Binding to 0.0.0.0 is required for Docker containers to accept external connections
-    # Security is handled by Docker networking, Kubernetes network policies, and security groups
-    app.run(host='0.0.0.0', port=port, debug=False)  # nosec B104
+    logger.info(f"Starting Flask app version {VERSION} on port {PORT}")
+    app.run(
+        host='0.0.0.0',
+        port=PORT,
+        debug=False
+    )
