@@ -12,7 +12,7 @@ env:
   CLOUDSMITH_ORG: your-org-name
   CLOUDSMITH_REPO: your-repo-name
   AWS_REGION: us-east-1
-  S3_BUCKET: your-scan-results-bucket
+  S3_BUCKET: flask-app-artifact
 
 jobs:
   test:
