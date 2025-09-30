@@ -1,5 +1,11 @@
+import sys
+import os
 import pytest
 import json
+
+# Add parent directory to Python path to import app module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from app import app
 
 @pytest.fixture
