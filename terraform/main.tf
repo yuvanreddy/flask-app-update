@@ -120,7 +120,14 @@ module "eks" {
   eks_managed_node_groups = {
     # Default node group
     default = {
-      name = "${var.cluster_name}-node-group"
+      name = "ng-default"
+      
+      # Disable name prefix to avoid length issues
+      use_name_prefix = false
+      
+      # Use custom IAM role name to control length
+      iam_role_name          = "${var.project_name}-ng-role"
+      iam_role_use_name_prefix = false
 
       min_size     = var.node_group_min_size
       max_size     = var.node_group_max_size
@@ -143,7 +150,14 @@ module "eks" {
 
     # Optional: Spot instances node group for cost optimization
     spot = {
-      name = "${var.cluster_name}-spot-node-group"
+      name = "ng-spot"
+      
+      # Disable name prefix to avoid length issues
+      use_name_prefix = false
+      
+      # Use custom IAM role name to control length
+      iam_role_name          = "${var.project_name}-ng-spot-role"
+      iam_role_use_name_prefix = false
 
       min_size     = var.spot_node_group_min_size
       max_size     = var.spot_node_group_max_size

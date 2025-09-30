@@ -17,9 +17,14 @@ variable "environment" {
 }
 
 variable "cluster_name" {
-  description = "Name of the EKS cluster"
+  description = "Name of the EKS cluster (keep it short - max 15 chars recommended)"
   type        = string
-  default     = "flask-app-cluster"
+  default     = "flask-eks"
+  
+  validation {
+    condition     = length(var.cluster_name) <= 15
+    error_message = "Cluster name must be 15 characters or less to avoid IAM role name length issues."
+  }
 }
 
 variable "kubernetes_version" {

@@ -7,7 +7,8 @@ project_name = "flask-app"
 environment  = "development"
 
 # EKS Cluster Configuration
-cluster_name                    = "flask-app-cluster"
+# IMPORTANT: Keep cluster_name short (max 15 chars) to avoid IAM role name length issues
+cluster_name                    = "flask-eks"
 kubernetes_version              = "1.28"
 cluster_endpoint_public_access  = true
 cluster_endpoint_private_access = true
