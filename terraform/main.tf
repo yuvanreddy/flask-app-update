@@ -11,31 +11,42 @@ terraform {
       version = "~> 2.23"
     }
   }
+
+  # Optional: Use S3 backend for state management
+  # Uncomment and configure after creating S3 bucket and DynamoDB table
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "eks-cluster/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   dynamodb_table = "terraform-state-lock"
+  # }
 }
 
-# S3 backend configuration will be in a separate file
-
+# AWS Provider Configuration
 provider "aws" {
   region = var.aws_region
 
+  # Default tags applied to all resources
+  # IMPORTANT: Only use static values, no timestamp() or dynamic functions
   default_tags {
     tags = {
       Environment = var.environment
       Project     = var.project_name
       ManagedBy   = "Terraform"
-      CreatedDate = formatdate("YYYY-MM-DD", timestamp())
     }
   }
 }
 
-# Data source for current AWS account
+# Get current AWS account information
 data "aws_caller_identity" "current" {}
 
+# Get available availability zones
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
-# VPC Module
+# VPC Module - Creates networking infrastructure
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
@@ -52,7 +63,7 @@ module "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  # Kubernetes tags required for EKS
+  # Tags required for EKS
   public_subnet_tags = {
     "kubernetes.io/role/elb"                    = "1"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
@@ -68,10 +79,10 @@ module "vpc" {
   }
 }
 
-# EKS Module
+# EKS Module - Creates Kubernetes cluster
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"  # Updated to latest version to fix deprecation warnings
+  version = "~> 20.0"
 
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version
@@ -79,6 +90,7 @@ module "eks" {
   cluster_endpoint_public_access  = var.cluster_endpoint_public_access
   cluster_endpoint_private_access = var.cluster_endpoint_private_access
 
+  # Cluster add-ons
   cluster_addons = {
     coredns = {
       most_recent = true
@@ -98,28 +110,26 @@ module "eks" {
   subnet_ids               = module.vpc.private_subnets
   control_plane_subnet_ids = module.vpc.private_subnets
 
-  # EKS Managed Node Group(s)
+  # EKS Managed Node Group defaults
   eks_managed_node_group_defaults = {
     instance_types = var.node_instance_types
     
     attach_cluster_primary_security_group = true
     
-    # Enable IRSA (IAM Roles for Service Accounts)
     iam_role_additional_policies = {
       AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
     }
   }
 
+  # EKS Managed Node Groups
   eks_managed_node_groups = {
-    # Default node group
+    # Default on-demand node group
     default = {
       name = "ng-default"
       
-      # Disable name prefix to avoid length issues
-      use_name_prefix = false
-      
-      # Use custom IAM role name to control length
-      iam_role_name          = "${var.project_name}-ng-role"
+      # Disable name prefix to avoid IAM role name length issues
+      use_name_prefix          = false
+      iam_role_name            = "${var.project_name}-ng-role"
       iam_role_use_name_prefix = false
 
       min_size     = var.node_group_min_size
@@ -137,7 +147,8 @@ module "eks" {
       }
 
       tags = {
-        Name = "${var.cluster_name}-node"
+        Name        = "${var.cluster_name}-node"
+        Environment = var.environment
       }
     }
 
@@ -145,11 +156,9 @@ module "eks" {
     spot = {
       name = "ng-spot"
       
-      # Disable name prefix to avoid length issues
-      use_name_prefix = false
-      
-      # Use custom IAM role name to control length
-      iam_role_name          = "${var.project_name}-ng-spot-role"
+      # Disable name prefix to avoid IAM role name length issues
+      use_name_prefix          = false
+      iam_role_name            = "${var.project_name}-ng-spot-role"
       iam_role_use_name_prefix = false
 
       min_size     = var.spot_node_group_min_size
@@ -166,21 +175,24 @@ module "eks" {
         environment = var.environment
       }
 
+      # Taints to prevent regular pods from scheduling on spot instances
+      # Note: Must be a list, and effect must be uppercase with underscores
       taints = [
         {
           key    = "spot"
           value  = "true"
-          effect = "NO_SCHEDULE"  # Must be uppercase with underscore
+          effect = "NO_SCHEDULE"
         }
       ]
 
       tags = {
-        Name = "${var.cluster_name}-spot-node"
+        Name        = "${var.cluster_name}-spot-node"
+        Environment = var.environment
       }
     }
   }
 
-  # Extend cluster security group rules
+  # Cluster security group rules
   cluster_security_group_additional_rules = {
     ingress_nodes_ephemeral_ports_tcp = {
       description                = "Nodes on ephemeral ports"
@@ -192,7 +204,7 @@ module "eks" {
     }
   }
 
-  # Extend node security group rules
+  # Node security group rules
   node_security_group_additional_rules = {
     ingress_self_all = {
       description = "Node to node all ports/protocols"
@@ -227,11 +239,12 @@ module "eks" {
   enable_irsa = true
 
   tags = {
-    Name = var.cluster_name
+    Name        = var.cluster_name
+    Environment = var.environment
   }
 }
 
-# Kubernetes provider configuration
+# Kubernetes Provider - Configure after EKS cluster is created
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
@@ -239,11 +252,11 @@ provider "kubernetes" {
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
   }
 }
 
-# Create namespaces
+# Create Kubernetes namespace for Flask application
 resource "kubernetes_namespace" "flask_app" {
   metadata {
     name = "flask-app"
@@ -257,7 +270,7 @@ resource "kubernetes_namespace" "flask_app" {
   depends_on = [module.eks]
 }
 
-# Create Cloudsmith registry secret
+# Create Cloudsmith registry secret for pulling Docker images
 resource "kubernetes_secret" "cloudsmith_registry" {
   metadata {
     name      = "cloudsmith-registry"
@@ -286,7 +299,7 @@ module "aws_load_balancer_controller_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
   version = "~> 5.0"
 
-  role_name = "${var.cluster_name}-aws-load-balancer-controller"
+  role_name = "${var.cluster_name}-alb-controller"
 
   attach_load_balancer_controller_policy = true
 
@@ -298,7 +311,8 @@ module "aws_load_balancer_controller_irsa_role" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-alb-controller"
+    Name        = "${var.cluster_name}-alb-controller"
+    Environment = var.environment
   }
 }
 
@@ -307,7 +321,7 @@ module "ebs_csi_driver_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
   version = "~> 5.0"
 
-  role_name = "${var.cluster_name}-ebs-csi-driver"
+  role_name = "${var.cluster_name}-ebs-csi"
 
   attach_ebs_csi_policy = true
 
@@ -319,11 +333,12 @@ module "ebs_csi_driver_irsa_role" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-ebs-csi"
+    Name        = "${var.cluster_name}-ebs-csi"
+    Environment = var.environment
   }
 }
 
-# Security group for application load balancer
+# Security group for Application Load Balancer
 resource "aws_security_group" "alb" {
   name        = "${var.cluster_name}-alb-sg"
   description = "Security group for application load balancer"
@@ -354,6 +369,7 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-alb-sg"
+    Name        = "${var.cluster_name}-alb-sg"
+    Environment = var.environment
   }
 }
