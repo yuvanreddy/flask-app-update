@@ -44,23 +44,33 @@ def get_data():
 # POST endpoint
 @app.route('/api/data', methods=['POST'])
 def post_data():
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    # Log received data safely (avoid log injection)
-    logger.info("Received POST data", extra={'data_size': len(str(data)) if data else 0})
+        if data is None:
+            return jsonify({'error': 'Invalid JSON data'}), 400
 
-    return jsonify({
-        'message': 'Data received successfully',
-        'data': data
-    }), 201
+        # Log received data safely (avoid log injection)
+        logger.info("Received POST data", extra={'data_size': len(str(data)) if data else 0})
+
+        return jsonify({
+            'message': 'Data received successfully',
+            'data': data
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Error processing POST data: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 # Error handler
 @app.errorhandler(404)
 def not_found(error):
+    logger.warning(f"404 error: {request.method} {request.path}")
     return jsonify({'error': 'Not found'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
+    logger.error(f"500 error: {request.method} {request.path}", exc_info=True)
     return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
