@@ -13,11 +13,11 @@ on:
 
 env:
   APP_NAME: flask-app
-  CLOUDSMITH_ORG: your-org-name  # UPDATE THIS
-  CLOUDSMITH_REPO: your-repo-name  # UPDATE THIS
+  CLOUDSMITH_ORG: flask-sample-app  # UPDATE THIS
+  CLOUDSMITH_REPO: flask-sample-app  # UPDATE THIS
   AWS_REGION: us-east-1
-  S3_BUCKET: your-scan-results-bucket  # UPDATE THIS
-  EKS_CLUSTER_NAME: my-eks-cluster  # UPDATE THIS - should match your terraform cluster name
+  S3_BUCKET: flask-app-artifact  # UPDATE THIS
+  EKS_CLUSTER_NAME: flask-eks  # UPDATE THIS - should match your terraform cluster name
 
 jobs:
   test:
