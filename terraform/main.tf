@@ -76,8 +76,6 @@ module "vpc" {
 
 # EKS Module - Creates Kubernetes cluster
 module "eks" {
-  manage_aws_auth = true
-
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.0"
 
@@ -238,16 +236,6 @@ module "eks" {
     Name        = var.cluster_name
     Environment = var.environment
   }
-
-
-aws_auth_roles = [
-  {
-    rolearn  = "arn:aws:iam::816069153839:role/github-actions-eks-admin"
-    username = "github-actions"
-    groups   = ["system:masters"]
-  }
-]
-
 }
 
 # IAM role for AWS Load Balancer Controller

@@ -1,8 +1,4 @@
 name: CI/CD Pipeline
-permissions:
-  id-token: write
-  contents: read
-
 
 on:
   push:
@@ -107,9 +103,6 @@ jobs:
         if: env.S3_BUCKET != 'your-scan-results-bucket'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::816069153839:role/github-actions-eks-admin
-          aws-region: us-east-1
-        with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
@@ -209,9 +202,6 @@ jobs:
         if: env.S3_BUCKET != 'your-scan-results-bucket'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::816069153839:role/github-actions-eks-admin
-          aws-region: us-east-1
-        with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
@@ -238,9 +228,6 @@ jobs:
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::816069153839:role/github-actions-eks-admin
-          aws-region: us-east-1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
