@@ -23,6 +23,7 @@ on:
           - plan
           - apply
           - destroy
+          - import
 
 # Add permissions for the workflow
 permissions:
@@ -143,6 +144,78 @@ jobs:
 
             *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
 
+  terraform-import:
+    name: Terraform Import
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    # Run import on manual import action
+    if: github.event.inputs.action == 'import'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Import IAM Roles
+        run: |
+          echo "Importing existing IAM roles into Terraform state..."
+
+          # Import ALB Controller IAM role
+          echo "Importing ALB Controller role..."
+          terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' my-eks-cluster-alb-controller
+
+          # Import EBS CSI Driver IAM role
+          echo "Importing EBS CSI Driver role..."
+          terraform import 'module.ebs_csi_driver_irsa_role.aws_iam_role.this[0]' my-eks-cluster-ebs-csi
+
+          echo "Import completed successfully!"
+        working-directory: ./terraform
+
+      - name: Terraform Plan After Import
+        id: plan-after-import
+        run: |
+          terraform plan -out=tfplan-after-import -input=false
+        working-directory: ./terraform
+
+      - name: Upload Updated Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-after-import
+          path: terraform/tfplan-after-import
+          retention-days: 5
+
+      - name: Comment Import Results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Import 📥\`SUCCESS\`
+
+            Import completed successfully! The existing IAM roles have been imported into the Terraform state.
+
+            <details><summary>Imported Resources</summary>
+
+            - ALB Controller IAM Role: \`my-eks-cluster-alb-controller\`
+            - EBS CSI Driver IAM Role: \`my-eks-cluster-ebs-csi\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -153,7 +226,7 @@ jobs:
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: terraform-plan
+    needs: [terraform-plan, terraform-import]
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       github.event.inputs.action == 'apply'
@@ -190,9 +263,19 @@ jobs:
           name: tfplan
           path: terraform/
 
+      - name: Download Import Plan (if available)
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-after-import
+          path: terraform/
+        continue-on-error: true
+
       - name: Terraform Apply
         run: |
-          if [ -f tfplan ]; then
+          if [ -f tfplan-after-import ]; then
+            echo "Applying import plan..."
+            terraform apply -input=false tfplan-after-import
+          elif [ -f tfplan ]; then
             echo "Applying saved plan..."
             terraform apply -input=false tfplan
           else
@@ -325,15 +408,10 @@ jobs:
         if: always()
         with:
           name: security-scan-results
-          path: |
-            checkov-results.sarif
-            tfsec-results.json
-        continue-on-error: true
-
   notify:
     name: Notification
     runs-on: ubuntu-latest
-    needs: [terraform-apply, terraform-destroy]
+    needs: [terraform-apply, terraform-destroy, terraform-import]
     if: always()
     
     steps:
@@ -344,6 +422,7 @@ jobs:
           echo "=========================================="
           echo "Apply Status: ${{ needs.terraform-apply.result }}"
           echo "Destroy Status: ${{ needs.terraform-destroy.result }}"
+          echo "Import Status: ${{ needs.terraform-import.result }}"
           echo "Branch: ${{ github.ref }}"
           echo "Commit: ${{ github.sha }}"
           echo "Actor: ${{ github.actor }}"
@@ -361,4 +440,10 @@ jobs:
             echo "🗑️  Infrastructure destroyed successfully!"
           elif [ "${{ needs.terraform-destroy.result }}" == "failure" ]; then
             echo "❌ Infrastructure destruction failed"
+          fi
+
+          if [ "${{ needs.terraform-import.result }}" == "success" ]; then
+            echo "📥 IAM roles imported successfully!"
+          elif [ "${{ needs.terraform-import.result }}" == "failure" ]; then
+            echo "❌ IAM role import failed"
           fi
