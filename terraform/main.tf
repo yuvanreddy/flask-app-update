@@ -8,15 +8,14 @@ terraform {
     }
   }
 
-  # Optional: Use S3 backend for state management
-  # Uncomment and configure after creating S3 bucket and DynamoDB table
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "eks-cluster/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-state-lock"
-  # }
+  # S3 backend for state management
+  backend "s3" {
+    bucket         = "flask-eks-tfstate-53832"
+    key            = "eks-cluster/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-state-lock"
+  }
 }
 
 # AWS Provider Configuration
