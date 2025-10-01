@@ -16,14 +16,14 @@ on:
     inputs:
       action:
         description: 'Terraform action to perform'
-        required: true
         default: 'plan'
         type: choice
         options:
           - plan
           - apply
-          - destroy
           - import
+          - destroy
+          - apply-only
 
 # Add permissions for the workflow
 permissions:
@@ -257,10 +257,10 @@ jobs:
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: [terraform-plan, terraform-import]
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
-      github.event.inputs.action == 'apply'
+      github.event.inputs.action == 'apply' ||
+      github.event.inputs.action == 'plan'
     environment:
       name: production
     
@@ -360,15 +360,51 @@ jobs:
           echo "Cluster is ready for deployments!"
         continue-on-error: true
 
+  terraform-apply-simple:
+    name: Terraform Apply (Simple)
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'apply-only'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -input=false
+        working-directory: ./terraform
+
+      - name: Display Success Message
+        run: |
+          echo "=========================================="
+          echo "✅ Terraform Apply Completed Successfully!"
+          echo "=========================================="
+          echo "Your EKS infrastructure is now fully deployed and managed by Terraform."
+          echo "=========================================="
+
   terraform-destroy:
     name: Terraform Destroy
     runs-on: ubuntu-latest
-    # Only run on manual destroy action
     if: github.event.inputs.action == 'destroy'
     needs: terraform-validate
     environment:
       name: production-destroy
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -407,7 +443,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -444,12 +480,13 @@ jobs:
             checkov-results.sarif
             tfsec-results.json
         continue-on-error: true
+
   notify:
     name: Notification
     runs-on: ubuntu-latest
-    needs: [terraform-apply, terraform-destroy, terraform-import]
+    needs: [terraform-apply, terraform-destroy, terraform-import, terraform-apply-simple]
     if: always()
-    
+
     steps:
       - name: Send notification
         run: |
@@ -457,21 +494,24 @@ jobs:
           echo "Terraform Workflow Completed"
           echo "=========================================="
           echo "Apply Status: ${{ needs.terraform-apply.result }}"
+          echo "Apply-Simple Status: ${{ needs.terraform-apply-simple.result }}"
           echo "Destroy Status: ${{ needs.terraform-destroy.result }}"
           echo "Import Status: ${{ needs.terraform-import.result }}"
           echo "Branch: ${{ github.ref }}"
           echo "Commit: ${{ github.sha }}"
           echo "Actor: ${{ github.actor }}"
           echo "=========================================="
-          
+
           if [ "${{ needs.terraform-apply.result }}" == "success" ]; then
             echo "✅ Infrastructure deployed successfully!"
+          elif [ "${{ needs.terraform-apply-simple.result }}" == "success" ]; then
+            echo "✅ Infrastructure deployed successfully (simple mode)!"
           elif [ "${{ needs.terraform-apply.result }}" == "skipped" ]; then
             echo "⏭️  Apply was skipped"
           elif [ "${{ needs.terraform-apply.result }}" == "failure" ]; then
             echo "❌ Infrastructure deployment failed"
           fi
-          
+
           if [ "${{ needs.terraform-destroy.result }}" == "success" ]; then
             echo "🗑️  Infrastructure destroyed successfully!"
           elif [ "${{ needs.terraform-destroy.result }}" == "failure" ]; then
