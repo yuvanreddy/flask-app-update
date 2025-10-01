@@ -53,10 +53,11 @@ module "vpc" {
   private_subnets = var.private_subnets
   public_subnets  = var.public_subnets
 
-  enable_nat_gateway   = true
-  single_nat_gateway   = var.single_nat_gateway
-  enable_dns_hostnames = true
-  enable_dns_support   = true
+  enable_nat_gateway      = true
+  single_nat_gateway      = var.single_nat_gateway
+  enable_dns_hostnames    = true
+  enable_dns_support      = true
+  map_public_ip_on_launch = true
 
   # Tags required for EKS
   public_subnet_tags = {
@@ -98,6 +99,7 @@ module "eks" {
     }
     aws-ebs-csi-driver = {
       most_recent = true
+      service_account_role_arn = module.ebs_csi_driver_irsa_role.iam_role_arn
     }
   }
 
@@ -331,27 +333,6 @@ resource "local_file" "kubeconfig" {
     aws_region       = var.aws_region
   })
   filename = "${path.module}/kubeconfig.yaml"
-
-  depends_on = [module.eks]
-}
-
-# EKS Access Entry for IAM user
-resource "aws_eks_access_entry" "deeraj" {
-  cluster_name   = module.eks.cluster_name
-  principal_arn  = "arn:aws:iam::816069153839:user/Deeraj"
-  type           = "STANDARD"
-
-  depends_on = [module.eks]
-}
-
-# EKS Access Policy Association for Admin access
-resource "aws_eks_access_policy_association" "deeraj_admin" {
-  cluster_name   = module.eks.cluster_name
-  principal_arn  = "arn:aws:iam::816069153839:user/Deeraj"
-  policy_arn     = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-  access_scope {
-    type = "cluster"
-  }
 
   depends_on = [module.eks]
 }

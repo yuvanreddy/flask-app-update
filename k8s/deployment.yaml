@@ -27,7 +27,7 @@ spec:
       
       containers:
       - name: flask-app
-        image: docker.cloudsmith.io/CLOUDSMITH_ORG/CLOUDSMITH_REPO/flask-app:IMAGE_TAG
+        image: docker.cloudsmith.io/flask-sample-app/flask-sample-app/flask-app:IMAGE_TAG
         imagePullPolicy: Always
         
         ports:
