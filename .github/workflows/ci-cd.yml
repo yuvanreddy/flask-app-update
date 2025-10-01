@@ -106,6 +106,17 @@ jobs:
       - name: Configure AWS credentials
         if: env.S3_BUCKET != 'your-scan-results-bucket'
         uses: aws-actions/configure-aws-credentials@v4
+        - name: Setup Terraform
+          uses: hashicorp/setup-terraform@v3
+        - name: Terraform Init
+          working-directory: ./terraform
+          run: terraform init -input=false
+        - name: Terraform Output Kubeconfig
+          working-directory: ./terraform
+          run: |
+            KUBECONFIG_CONTENT=$(terraform output -raw kubeconfig)
+            echo "$KUBECONFIG_CONTENT" > $GITHUB_WORKSPACE/kubeconfig
+            echo "KUBECONFIG=$GITHUB_WORKSPACE/kubeconfig" >> $GITHUB_ENV
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -205,6 +216,17 @@ jobs:
       - name: Configure AWS credentials
         if: env.S3_BUCKET != 'your-scan-results-bucket'
         uses: aws-actions/configure-aws-credentials@v4
+        - name: Setup Terraform
+          uses: hashicorp/setup-terraform@v3
+        - name: Terraform Init
+          working-directory: ./terraform
+          run: terraform init -input=false
+        - name: Terraform Output Kubeconfig
+          working-directory: ./terraform
+          run: |
+            KUBECONFIG_CONTENT=$(terraform output -raw kubeconfig)
+            echo "$KUBECONFIG_CONTENT" > $GITHUB_WORKSPACE/kubeconfig
+            echo "KUBECONFIG=$GITHUB_WORKSPACE/kubeconfig" >> $GITHUB_ENV
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -232,6 +254,17 @@ jobs:
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
+        - name: Setup Terraform
+          uses: hashicorp/setup-terraform@v3
+        - name: Terraform Init
+          working-directory: ./terraform
+          run: terraform init -input=false
+        - name: Terraform Output Kubeconfig
+          working-directory: ./terraform
+          run: |
+            KUBECONFIG_CONTENT=$(terraform output -raw kubeconfig)
+            echo "$KUBECONFIG_CONTENT" > $GITHUB_WORKSPACE/kubeconfig
+            echo "KUBECONFIG=$GITHUB_WORKSPACE/kubeconfig" >> $GITHUB_ENV
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -239,7 +272,6 @@ jobs:
 
       - name: Update kubeconfig for EKS
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
           kubectl version --client
           kubectl cluster-info
 
