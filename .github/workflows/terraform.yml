@@ -401,6 +401,7 @@ jobs:
         if: always()
         with:
           sarif_file: checkov-results.sarif
+          path: .
         continue-on-error: true
 
       - name: Upload scan results as artifact
@@ -408,6 +409,10 @@ jobs:
         if: always()
         with:
           name: security-scan-results
+          path: |
+            checkov-results.sarif
+            tfsec-results.json
+        continue-on-error: true
   notify:
     name: Notification
     runs-on: ubuntu-latest
