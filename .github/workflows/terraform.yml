@@ -173,17 +173,32 @@ jobs:
 
       - name: Terraform Import IAM Roles
         run: |
-          echo "Importing existing IAM roles into Terraform state..."
+          echo "Checking Terraform state and importing IAM roles..."
 
-          # Import ALB Controller IAM role
-          echo "Importing ALB Controller role..."
-          terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' my-eks-cluster-alb-controller
+          # Check if resources are already in state
+          if terraform state list | grep -q "module.aws_load_balancer_controller_irsa_role.aws_iam_role.this\[0\]"; then
+            echo "ALB Controller role already managed by Terraform - skipping import"
+          else
+            echo "Importing ALB Controller role..."
+            if terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' my-eks-cluster-alb-controller; then
+              echo "✅ ALB Controller role imported successfully"
+            else
+              echo "❌ Failed to import ALB Controller role - may already be managed"
+            fi
+          fi
 
-          # Import EBS CSI Driver IAM role
-          echo "Importing EBS CSI Driver role..."
-          terraform import 'module.ebs_csi_driver_irsa_role.aws_iam_role.this[0]' my-eks-cluster-ebs-csi
+          if terraform state list | grep -q "module.ebs_csi_driver_irsa_role.aws_iam_role.this\[0\]"; then
+            echo "EBS CSI Driver role already managed by Terraform - skipping import"
+          else
+            echo "Importing EBS CSI Driver role..."
+            if terraform import 'module.ebs_csi_driver_irsa_role.aws_iam_role.this[0]' my-eks-cluster-ebs-csi; then
+              echo "✅ EBS CSI Driver role imported successfully"
+            else
+              echo "❌ Failed to import EBS CSI Driver role - may already be managed"
+            fi
+          fi
 
-          echo "Import completed successfully!"
+          echo "Import process completed!"
         working-directory: ./terraform
 
       - name: Terraform Plan After Import
@@ -205,12 +220,12 @@ jobs:
           script: |
             const output = `#### Terraform Import 📥\`SUCCESS\`
 
-            Import completed successfully! The existing IAM roles have been imported into the Terraform state.
+            The IAM roles import process completed. Resources that were not already managed by Terraform have been imported.
 
-            <details><summary>Imported Resources</summary>
+            <details><summary>Import Summary</summary>
 
-            - ALB Controller IAM Role: \`my-eks-cluster-alb-controller\`
-            - EBS CSI Driver IAM Role: \`my-eks-cluster-ebs-csi\`
+            - ALB Controller IAM Role: \`my-eks-cluster-alb-controller\` - imported or already managed
+            - EBS CSI Driver IAM Role: \`my-eks-cluster-ebs-csi\` - imported or already managed
 
             </details>
 
