@@ -1,5 +1,5 @@
 # Project Configuration
-project_name = "my-project"
+project_name = "flask-app"
 environment  = "production"
 
 # AWS Configuration
