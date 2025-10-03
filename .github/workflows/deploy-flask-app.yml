@@ -76,7 +76,7 @@ jobs:
 
       - name: Ensure workload ServiceAccount uses imagePullSecret
         run: |
-          cat <<EOF | kubectl apply -f -
+          kubectl apply -f - <<EOF
           apiVersion: v1
           kind: ServiceAccount
           metadata:
@@ -90,23 +90,23 @@ jobs:
       - name: Ensure Service exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
-            cat <<EOF | kubectl apply -f -
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: ${SERVICE}
-              namespace: ${NAMESPACE}
-              labels:
-                app: ${DEPLOYMENT}
-            spec:
-              selector:
-                app: ${DEPLOYMENT}
-              ports:
-              - name: http
-                port: 80
-                targetPort: ${BACKEND_PORT}
-              type: ClusterIP
-            EOF
+            kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${SERVICE}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${DEPLOYMENT}
+          spec:
+            selector:
+              app: ${DEPLOYMENT}
+            ports:
+            - name: http
+              port: 80
+              targetPort: ${BACKEND_PORT}
+            type: ClusterIP
+          EOF
           fi
 
       # --- Patch Deployment to use SA + imagePullSecret (idempotent) ---
@@ -127,31 +127,31 @@ jobs:
       - name: Ensure Ingress (AWS Load Balancer Controller) exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
-            cat <<EOF | kubectl apply -f -
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
-              name: ${INGRESS_NAME}
-              namespace: ${NAMESPACE}
-              annotations:
-                alb.ingress.kubernetes.io/scheme: internet-facing
-                alb.ingress.kubernetes.io/target-type: ip
-                alb.ingress.kubernetes.io/group.name: ${INGRESS_GROUP}
-                alb.ingress.kubernetes.io/healthcheck-path: ${HEALTHCHECK_PATH}
-                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
-            spec:
-              ingressClassName: ${INGRESS_CLASS}
-              rules:
-              - http:
-                  paths:
-                  - path: /
-                    pathType: Prefix
-                    backend:
-                      service:
-                        name: ${SERVICE}
-                        port:
-                          number: 80
-            EOF
+            kubectl apply -f - <<EOF
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ${INGRESS_NAME}
+            namespace: ${NAMESPACE}
+            annotations:
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/group.name: ${INGRESS_GROUP}
+              alb.ingress.kubernetes.io/healthcheck-path: ${HEALTHCHECK_PATH}
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+          spec:
+            ingressClassName: ${INGRESS_CLASS}
+            rules:
+            - http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: ${SERVICE}
+                      port:
+                        number: 80
+          EOF
           fi
 
       # --- Restart pods to ensure fresh pull with creds ---
