@@ -34,8 +34,8 @@ jobs:
       - name: Run Bandit (SAST - Python Security)
         run: |
           echo "🔍 Running Bandit security scan..."
-          bandit -r . -f json -o bandit-report.json || true
-          bandit -r . -f screen
+          bandit -r . -ll -f json -o bandit-report.json || true
+          bandit -r . -ll -f screen
         continue-on-error: false
 
       - name: Run Safety (Dependency Vulnerability Scan)
