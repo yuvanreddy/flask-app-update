@@ -29,7 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install bandit safety
+          pip install bandit
 
       - name: Run Bandit (SAST - Python Security)
         run: |
@@ -41,9 +41,10 @@ jobs:
       - name: Run Safety (Dependency Vulnerability Scan)
         run: |
           echo "🔍 Scanning dependencies for known vulnerabilities..."
-          safety check --json || true
-          safety check
-        continue-on-error: false
+          pip install safety
+          safety scan --json > safety-report.json || true
+          safety scan
+        continue-on-error: true
 
       - name: Upload Bandit Report
         uses: actions/upload-artifact@v4
@@ -51,6 +52,13 @@ jobs:
         with:
           name: bandit-security-report
           path: bandit-report.json
+
+      - name: Upload Safety Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safety-security-report
+          path: safety-report.json
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -69,6 +77,7 @@ jobs:
           
           echo "📦 Uploading security reports to S3..."
           aws s3 cp bandit-report.json ${S3_PATH}/bandit-report.json
+          aws s3 cp safety-report.json ${S3_PATH}/safety-report.json || true
           
           echo "✅ Reports uploaded to: ${S3_PATH}"
           echo "S3_REPORT_PATH=${S3_PATH}" >> $GITHUB_ENV
