@@ -66,7 +66,13 @@ jobs:
       # --- Cloudsmith image pull secret + SA (CI-managed) ---
       - name: Create/Update Cloudsmith imagePullSecret
         run: |
-          kubectl create secret docker-registry "${REG_SECRET}"             --namespace "${NAMESPACE}"             --docker-server="${REG_SERVER}"             --docker-username="${{ secrets.CLOUDSMITH_USERNAME }}"             --docker-password="${{ secrets.CLOUDSMITH_PASSWORD }}"             --docker-email="devnull@example.com"             --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry "${REG_SECRET}" \
+            --namespace "${NAMESPACE}" \
+            --docker-server="${REG_SERVER}" \
+            --docker-username="${{ secrets.CLOUDSMITH_USERNAME }}" \
+            --docker-password="${{ secrets.CLOUDSMITH_API_KEY }}" \
+            --docker-email="devnull@example.com" \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Ensure workload ServiceAccount uses imagePullSecret
         run: |
