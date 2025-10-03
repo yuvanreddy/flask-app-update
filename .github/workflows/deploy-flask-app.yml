@@ -1,250 +1,185 @@
-name: Deploy Flask Application to EKS
+name: Deploy Flask App to EKS (with ALB)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ master ]
     paths:
       - 'app.py'
       - 'requirements.txt'
       - 'Dockerfile'
-      - 'kubernetes/**'
+      - '.github/workflows/**'
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Docker image tag to deploy'
-        required: false
-        default: 'latest'
 
 permissions:
+  id-token: write
   contents: read
-  packages: write
 
 env:
   AWS_REGION: us-east-1
-  CLUSTER_NAME: flask-eks-master
-  APP_NAME: flask-app
+  EKS_CLUSTER_NAME: flask-eks-master
   NAMESPACE: default
 
+  # Workload names
+  DEPLOYMENT: flask-app
+  CONTAINER: flask
+  SERVICE: flask-svc
+
+  # Cloudsmith (registry)
+  REG_SERVER: docker.cloudsmith.io
+  REG_SECRET: cloudsmith-regcred
+  APP_SA: flask-app-sa
+
+  # Ingress/ALB settings
+  INGRESS_NAME: flask-alb
+  INGRESS_CLASS: alb
+  INGRESS_GROUP: flask-demo
+  HEALTHCHECK_PATH: /health
+  BACKEND_PORT: 5000
+
 jobs:
-  deploy-flask-app:
-    name: Deploy Flask Application
+  deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
-          version: 'v1.28.0'
+          version: 'latest'
 
-      - name: Configure kubectl
+      - name: Update kubeconfig for EKS
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-          kubectl cluster-info
-          kubectl get nodes
+          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      - name: Create namespace if not exists
+      - name: Ensure namespace exists
         run: |
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
 
-      - name: Get Docker image from CloudSmith
-        id: image
+      # --- Cloudsmith image pull secret + SA (CI-managed) ---
+      - name: Create/Update Cloudsmith imagePullSecret
         run: |
-          IMAGE_TAG="${{ github.event.inputs.image_tag || 'latest' }}"
-          IMAGE_NAME="docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/flask-devops-demo:${IMAGE_TAG}"
-          echo "image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "Deploying image: ${IMAGE_NAME}"
+          kubectl create secret docker-registry "${REG_SECRET}"             --namespace "${NAMESPACE}"             --docker-server="${REG_SERVER}"             --docker-username="${{ secrets.CLOUDSMITH_USERNAME }}"             --docker-password="${{ secrets.CLOUDSMITH_PASSWORD }}"             --docker-email="devnull@example.com"             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Create Kubernetes manifests
+      - name: Ensure workload ServiceAccount uses imagePullSecret
         run: |
-          cat > /tmp/flask-deployment.yaml <<EOF
+          cat <<'EOF' | kubectl apply -f -
           apiVersion: v1
-          kind: Namespace
+          kind: ServiceAccount
           metadata:
-            name: ${{ env.NAMESPACE }}
-          ---
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: ${{ env.APP_NAME }}
-            namespace: ${{ env.NAMESPACE }}
-            labels:
-              app: ${{ env.APP_NAME }}
-          spec:
-            replicas: 2
-            selector:
-              matchLabels:
-                app: ${{ env.APP_NAME }}
-            template:
-              metadata:
-                labels:
-                  app: ${{ env.APP_NAME }}
-              spec:
-                containers:
-                - name: flask
-                  image: ${{ steps.image.outputs.image }}
-                  ports:
-                  - containerPort: 5000
-                    name: http
-                  env:
-                  - name: FLASK_ENV
-                    value: "production"
-                  - name: PORT
-                    value: "5000"
-                  resources:
-                    requests:
-                      cpu: 100m
-                      memory: 128Mi
-                    limits:
-                      cpu: 500m
-                      memory: 512Mi
-                  livenessProbe:
-                    httpGet:
-                      path: /health
-                      port: 5000
-                    initialDelaySeconds: 30
-                    periodSeconds: 10
-                  readinessProbe:
-                    httpGet:
-                      path: /ready
-                      port: 5000
-                    initialDelaySeconds: 5
-                    periodSeconds: 5
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: ${{ env.APP_NAME }}-service
-            namespace: ${{ env.NAMESPACE }}
-          spec:
-            type: ClusterIP
-            selector:
-              app: ${{ env.APP_NAME }}
-            ports:
-            - port: 80
-              targetPort: 5000
-              protocol: TCP
-              name: http
-          ---
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: ${{ env.APP_NAME }}-ingress
-            namespace: ${{ env.NAMESPACE }}
-            annotations:
-              kubernetes.io/ingress.class: alb
-              alb.ingress.kubernetes.io/scheme: internet-facing
-              alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/healthcheck-path: /health
-              alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
-              alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
-              alb.ingress.kubernetes.io/healthy-threshold-count: '2'
-              alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
-              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
-          spec:
-            ingressClassName: alb
-            rules:
-            - http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: ${{ env.APP_NAME }}-service
-                      port:
-                        number: 80
+            name: ${APP_SA}
+            namespace: ${NAMESPACE}
+          imagePullSecrets:
+          - name: ${REG_SECRET}
           EOF
-          
-          cat /tmp/flask-deployment.yaml
 
-      - name: Deploy Flask application
+      # --- Optional: create Service if missing (ClusterIP on port 80 -> containerPort BACKEND_PORT) ---
+      - name: Ensure Service exists
         run: |
-          kubectl apply -f /tmp/flask-deployment.yaml
+          if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
+            cat <<'EOF' | kubectl apply -f -
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: ${SERVICE}
+              namespace: ${NAMESPACE}
+              labels:
+                app: ${DEPLOYMENT}
+            spec:
+              selector:
+                app: ${DEPLOYMENT}
+              ports:
+              - name: http
+                port: 80
+                targetPort: ${BACKEND_PORT}
+              type: ClusterIP
+            EOF
+          fi
 
-      - name: Wait for deployment rollout
+      # --- Patch Deployment to use SA + imagePullSecret (idempotent) ---
+      - name: Patch Deployment for SA and imagePullSecrets
         run: |
-          kubectl rollout status deployment/${{ env.APP_NAME }} -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl -n "${NAMESPACE}" patch deploy "${DEPLOYMENT}" --type='json' -p='[
+            {"op":"add","path":"/spec/template/spec/serviceAccountName","value":"'${APP_SA}'"},
+            {"op":"add","path":"/spec/template/spec/imagePullSecrets","value":[{"name":"'${REG_SECRET}'"}]}
+          ]' || echo "Patch already applied or deployment not found yet; continuing."
 
-      - name: Verify deployment
+      # --- Optional: set image at deploy-time (if ENV IMAGE is defined as a secret or env) ---
+      - name: Set image tag on Deployment (optional)
+        if: ${{ env.IMAGE != '' }}
         run: |
-          echo "=== Deployment Status ==="
-          kubectl get deployment -n ${{ env.NAMESPACE }}
-          
-          echo "=== Pods ==="
-          kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.APP_NAME }}
-          
-          echo "=== Service ==="
-          kubectl get service -n ${{ env.NAMESPACE }}
-          
-          echo "=== Ingress ==="
-          kubectl get ingress -n ${{ env.NAMESPACE }}
+          kubectl -n "${NAMESPACE}" set image deploy/${DEPLOYMENT} ${CONTAINER}=${IMAGE} --record || true
 
-      - name: Wait for Load Balancer provisioning
+      # --- Ensure ALB Ingress exists (internet-facing) ---
+      - name: Ensure Ingress (AWS Load Balancer Controller) exists
         run: |
-          echo "Waiting for ALB to be provisioned..."
-          for i in {1..30}; do
-            LB_ADDRESS=$(kubectl get ingress ${{ env.APP_NAME }}-ingress -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-            if [ -n "$LB_ADDRESS" ]; then
-              echo "Load Balancer Address: $LB_ADDRESS"
-              echo "lb_address=$LB_ADDRESS" >> $GITHUB_ENV
-              break
-            fi
-            echo "Waiting... ($i/30)"
+          if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
+            cat <<'EOF' | kubectl apply -f -
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: ${INGRESS_NAME}
+              namespace: ${NAMESPACE}
+              annotations:
+                alb.ingress.kubernetes.io/scheme: internet-facing
+                alb.ingress.kubernetes.io/target-type: ip
+                alb.ingress.kubernetes.io/group.name: ${INGRESS_GROUP}
+                alb.ingress.kubernetes.io/healthcheck-path: ${HEALTHCHECK_PATH}
+                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+            spec:
+              ingressClassName: ${INGRESS_CLASS}
+              rules:
+              - http:
+                  paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: ${SERVICE}
+                        port:
+                          number: 80
+            EOF
+          fi
+
+      # --- Restart pods to ensure fresh pull with creds ---
+      - name: Rollout restart and wait
+        run: |
+          kubectl -n "${NAMESPACE}" rollout restart deploy "${DEPLOYMENT}"
+          kubectl -n "${NAMESPACE}" rollout status deploy "${DEPLOYMENT}" --timeout=300s
+
+      # --- Wait for ALB hostname and print endpoints ---
+      - name: Fetch ALB address
+        id: alb
+        run: |
+          echo "Waiting for Ingress address ..."
+          for i in $(seq 1 60); do
+            HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$HOST" ]; then echo "host=$HOST" >> $GITHUB_OUTPUT; exit 0; fi
             sleep 10
           done
+          echo "host=" >> $GITHUB_OUTPUT
 
-      - name: Test application endpoint
+      - name: Summary
         run: |
-          if [ -n "${{ env.lb_address }}" ]; then
-            echo "Testing application endpoint..."
-            sleep 30  # Wait for ALB to be fully ready
-            curl -f http://${{ env.lb_address }}/ || echo "Application not yet accessible"
-            curl -f http://${{ env.lb_address }}/health || echo "Health check not yet accessible"
+          echo "=== Pods ==="
+          kubectl -n "${NAMESPACE}" get pods -l app=${DEPLOYMENT} -o wide || true
+          echo
+          echo "=== Service ==="
+          kubectl -n "${NAMESPACE}" get svc ${SERVICE} -o wide || true
+          echo
+          echo "=== Ingress ==="
+          kubectl -n "${NAMESPACE}" get ingress ${INGRESS_NAME} -o wide || true
+          echo
+          if [ -n "${{ steps.alb.outputs.host }}" ]; then
+            echo "App URL: http://${{ steps.alb.outputs.host }}/"
+            echo "Health:  http://${{ steps.alb.outputs.host }}${HEALTHCHECK_PATH}"
           else
-            echo "Load balancer address not yet available"
+            echo "ALB is still provisioning. Re-run 'kubectl get ingress -n ${NAMESPACE}' to check."
           fi
-
-      - name: Get application logs
-        if: always()
-        run: |
-          echo "=== Recent Application Logs ==="
-          kubectl logs -n ${{ env.NAMESPACE }} -l app=${{ env.APP_NAME }} --tail=50 --all-containers=true || true
-
-      - name: Deployment Summary
-        if: always()
-        run: |
-          echo "## Flask Application Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Cluster:** ${{ env.CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Namespace:** ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** ${{ steps.image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -n "${{ env.lb_address }}" ]; then
-            echo "### Application URL" >> $GITHUB_STEP_SUMMARY
-            echo "🌐 **http://${{ env.lb_address }}**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Test endpoints:" >> $GITHUB_STEP_SUMMARY
-            echo "- Health: http://${{ env.lb_address }}/health" >> $GITHUB_STEP_SUMMARY
-            echo "- Ready: http://${{ env.lb_address }}/ready" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⏳ Load Balancer provisioning in progress..." >> $GITHUB_STEP_SUMMARY
-            echo "Check status: \`kubectl get ingress -n ${{ env.NAMESPACE }}\`" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Verify Deployment" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "kubectl get pods -n ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
-          echo "kubectl get ingress -n ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
