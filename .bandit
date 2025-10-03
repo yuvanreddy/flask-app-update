@@ -1,23 +1,11 @@
-# Bandit configuration file
-# Security scanning configuration for Python code
+[bandit]
+exclude_dirs = /test,/tests,/venv,/.venv,/env
 
-exclude_dirs:
-  - /test
-  - /tests
-  - /venv
-  - /.venv
-  - /env
-
-# Plugins to skip (if needed)
-skips:
-  # B104: hardcoded_bind_all_interfaces - we need 0.0.0.0 for containers
-  - B104
-
-# Tests to run (leave empty to run all)
-tests:
+# Skip B104: hardcoded_bind_all_interfaces - Required for containerized apps
+skips = B104
 
 # Confidence level (LOW, MEDIUM, HIGH)
-confidence: MEDIUM
+confidence = MEDIUM
 
 # Severity level (LOW, MEDIUM, HIGH)  
-severity: MEDIUM
+severity = MEDIUM

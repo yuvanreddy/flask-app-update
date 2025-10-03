@@ -52,6 +52,26 @@ jobs:
           name: bandit-security-report
           path: bandit-report.json
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload Security Reports to S3
+        if: always()
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          S3_PATH="s3://flask-app-artifact/security-reports/${BRANCH_NAME}/${TIMESTAMP}"
+          
+          echo "📦 Uploading security reports to S3..."
+          aws s3 cp bandit-report.json ${S3_PATH}/bandit-report.json
+          
+          echo "✅ Reports uploaded to: ${S3_PATH}"
+          echo "S3_REPORT_PATH=${S3_PATH}" >> $GITHUB_ENV
+
   build-and-push:
     name: Build, Scan Image & Push
     runs-on: ubuntu-latest
@@ -116,6 +136,26 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        if: always()
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload Trivy Reports to S3
+        if: always()
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          S3_PATH="s3://flask-app-artifact/trivy-reports/${BRANCH_NAME}/${TIMESTAMP}"
+          
+          echo "📦 Uploading Trivy scan results to S3..."
+          aws s3 cp trivy-results.sarif ${S3_PATH}/trivy-results.sarif
+          
+          echo "✅ Trivy reports uploaded to: ${S3_PATH}"
 
       - name: Push to CloudSmith
         uses: docker/build-push-action@v5
