@@ -76,7 +76,7 @@ jobs:
 
       - name: Ensure workload ServiceAccount uses imagePullSecret
         run: |
-          cat <<'EOF' | kubectl apply -f -
+          cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: ServiceAccount
           metadata:
@@ -90,7 +90,7 @@ jobs:
       - name: Ensure Service exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
-            cat <<'EOF' | kubectl apply -f -
+            cat <<EOF | kubectl apply -f -
             apiVersion: v1
             kind: Service
             metadata:
@@ -127,7 +127,7 @@ jobs:
       - name: Ensure Ingress (AWS Load Balancer Controller) exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
-            cat <<'EOF' | kubectl apply -f -
+            cat <<EOF | kubectl apply -f -
             apiVersion: networking.k8s.io/v1
             kind: Ingress
             metadata:
