@@ -5,6 +5,7 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:  # Enables manual trigger button
 
 env:
   IMAGE_NAME: flask-devops-demo
