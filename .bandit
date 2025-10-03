@@ -4,8 +4,11 @@ exclude_dirs = /test,/tests,/venv,/.venv,/env
 # Skip B104: hardcoded_bind_all_interfaces - Required for containerized apps
 skips = B104
 
-# Confidence level (LOW, MEDIUM, HIGH)
-confidence = MEDIUM
+# Tests to run (leave empty to run all)
+tests =
 
-# Severity level (LOW, MEDIUM, HIGH)  
-severity = MEDIUM
+# Severity level (low, medium, high)
+severity = medium
+
+# Confidence level (low, medium, high)
+confidence = medium

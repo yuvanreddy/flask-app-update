@@ -54,13 +54,14 @@ jobs:
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload Security Reports to S3
-        if: always()
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
         run: |
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
@@ -139,14 +140,14 @@ jobs:
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
-        if: always()
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload Trivy Reports to S3
-        if: always()
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
         run: |
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
