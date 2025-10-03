@@ -136,19 +136,6 @@ resource "aws_eks_addon" "vpc_cni" {
   tags = var.tags
 }
 
-# EKS Addon - CoreDNS
-resource "aws_eks_addon" "coredns" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "coredns"
-
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-
-  tags = var.tags
-
-  depends_on = [aws_eks_addon.vpc_cni]
-}
-
 # EKS Addon - kube-proxy
 resource "aws_eks_addon" "kube_proxy" {
   cluster_name = aws_eks_cluster.main.name
@@ -159,3 +146,7 @@ resource "aws_eks_addon" "kube_proxy" {
 
   tags = var.tags
 }
+
+# Note: CoreDNS addon removed from Terraform management
+# It will be installed after node groups are ready via null_resource in main.tf
+# This prevents the DEGRADED state issue when nodes aren't ready yet
