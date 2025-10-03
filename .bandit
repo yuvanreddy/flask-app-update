@@ -1,34 +1,23 @@
 # Bandit configuration file
-# https://bandit.readthedocs.io/en/latest/config.html
+# Security scanning configuration for Python code
 
-# Tests to skip
-# B104: hardcoded_bind_all_interfaces - Required for Docker containers
-# We bind to 0.0.0.0 because:
-# 1. Running in Docker containers requires binding to all interfaces
-# 2. Security is handled by:
-#    - Docker network isolation
-#    - Kubernetes network policies
-#    - AWS Security Groups
-#    - Load balancer configurations
-# 3. This is standard practice for containerized applications
-
-skips: []
-
-# Exclude specific paths
 exclude_dirs:
   - /test
   - /tests
-  - .venv
-  - venv
+  - /venv
+  - /.venv
+  - /env
 
-# Tests to explicitly include (empty means all)
-tests: []
+# Plugins to skip (if needed)
+skips:
+  # B104: hardcoded_bind_all_interfaces - we need 0.0.0.0 for containers
+  - B104
 
-# Severity level threshold
-# Options: LOW, MEDIUM, HIGH
-# Only report issues of this severity or higher
-severity: MEDIUM
+# Tests to run (leave empty to run all)
+tests:
 
-# Confidence level threshold
-# Options: LOW, MEDIUM, HIGH
+# Confidence level (LOW, MEDIUM, HIGH)
 confidence: MEDIUM
+
+# Severity level (LOW, MEDIUM, HIGH)  
+severity: MEDIUM

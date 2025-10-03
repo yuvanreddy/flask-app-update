@@ -1,7 +1,6 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 import os
 import logging
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -13,86 +12,50 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-app.config['JSON_SORT_KEYS'] = False
-VERSION = os.getenv('APP_VERSION', 'dev')
-PORT = int(os.getenv('PORT', 5000))
+app.config['ENV'] = os.getenv('FLASK_ENV', 'production')
+app.config['DEBUG'] = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 
 @app.route('/')
-def index():
-    """Root endpoint"""
+def home():
+    logger.info("Home endpoint accessed")
     return jsonify({
-        'message': 'Welcome to Flask App on EKS!',
-        'version': VERSION,
-        'timestamp': datetime.utcnow().isoformat(),
-        'endpoints': {
-            'health': '/health',
-            'info': '/info',
-            'api': '/api/hello'
-        }
+        "message": "Flask DevOps Demo Application",
+        "status": "running",
+        "version": "1.0.0"
     })
 
 @app.route('/health')
 def health():
-    """Health check endpoint for K8s probes"""
+    """Health check endpoint for monitoring"""
     return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'version': VERSION
+        "status": "healthy",
+        "service": "flask-devops-demo"
     }), 200
 
-@app.route('/info')
-def info():
-    """Application information"""
+@app.route('/ready')
+def ready():
+    """Readiness check endpoint"""
     return jsonify({
-        'application': 'flask-app',
-        'version': VERSION,
-        'environment': os.getenv('FLASK_ENV', 'production'),
-        'python_version': os.sys.version,
-        'timestamp': datetime.utcnow().isoformat()
-    })
-
-@app.route('/api/hello', methods=['GET'])
-def hello():
-    """Simple API endpoint"""
-    name = request.args.get('name', 'World')
-    return jsonify({
-        'message': f'Hello, {name}!',
-        'version': VERSION,
-        'timestamp': datetime.utcnow().isoformat()
-    })
-
-@app.route('/api/echo', methods=['POST'])
-def echo():
-    """Echo endpoint for testing"""
-    data = request.get_json()
-    return jsonify({
-        'received': data,
-        'timestamp': datetime.utcnow().isoformat()
-    })
+        "status": "ready",
+        "service": "flask-devops-demo"
+    }), 200
 
 @app.errorhandler(404)
 def not_found(error):
-    """Handle 404 errors"""
     return jsonify({
-        'error': 'Not Found',
-        'status': 404,
-        'timestamp': datetime.utcnow().isoformat()
+        "error": "Not found",
+        "status": 404
     }), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    """Handle 500 errors"""
-    logger.error(f"Internal server error: {error}")
+    logger.error(f"Internal error: {error}")
     return jsonify({
-        'error': 'Internal Server Error',
-        'status': 500,
-        'timestamp': datetime.utcnow().isoformat()
+        "error": "Internal server error",
+        "status": 500
     }), 500
 
 if __name__ == '__main__':
-    logger.info(f"Starting Flask app version {VERSION} on port {PORT}")
-    app.run(
-        host='0.0.0.0',
-        port=PORT,
-        debug=False
-    )
+    port = int(os.getenv('PORT', 5000))
+    logger.info(f"Starting Flask app on port {port}")
+    app.run(host='0.0.0.0', port=port)

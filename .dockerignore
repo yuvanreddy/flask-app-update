@@ -1,20 +1,14 @@
-# Git
+# Git files
 .git
 .gitignore
 .gitattributes
 
-# CI/CD
-.github
-
-# Python
+# Python cache and artifacts
 __pycache__
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
-venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -31,30 +25,54 @@ wheels/
 .installed.cfg
 *.egg
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
 
-# IDE
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.cover
+.hypothesis/
 
 # Documentation
-*.md
 docs/
+*.md
+README.md
+LICENSE
 
-# Kubernetes
-k8s/
+# CI/CD files
+.github/
+.gitlab-ci.yml
+Jenkinsfile
 
-# Reports
-*-report.json
+# Environment files (SECURITY)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
 *.log
+logs/
+
+# Docker files (no need to copy these into image)
+Dockerfile*
+docker-compose*.yml
+
+# Other
+.dockerignore
+node_modules/

@@ -1,38 +1,44 @@
-# Multi-stage build for smaller image size
+# Multi-stage build for production
+# Stage 1: Build stage
 FROM python:3.11-slim as builder
 
 # Set working directory
 WORKDIR /app
 
-# Install dependencies
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first (for better caching)
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Final stage
+# Stage 2: Runtime stage
 FROM python:3.11-slim
 
-# Create non-root user
-RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app && \
-    chown -R appuser:appuser /app
+# Set labels for metadata
+LABEL maintainer="your-email@example.com"
+LABEL version="1.0.0"
+LABEL description="Flask DevOps Demo Application"
 
+# Create non-root user for security
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -u 1001 appuser
+
+# Set working directory
 WORKDIR /app
 
-# Copy dependencies from builder
-COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /home/appuser/.local
 
 # Copy application code
-COPY --chown=appuser:appuser app.py .
+COPY --chown=appuser:appuser . .
 
-# Set environment variables
-ENV PATH=/home/appuser/.local/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    FLASK_ENV=production \
-    PORT=5000
-
-# Build argument for version
-ARG APP_VERSION=latest
-ENV APP_VERSION=${APP_VERSION}
+# Update PATH to include user packages
+ENV PATH=/home/appuser/.local/bin:$PATH
 
 # Switch to non-root user
 USER appuser
@@ -42,7 +48,7 @@ EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:5000/health')" || exit 1
 
-# Run the application
-CMD ["python", "app.py"]
+# Use gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
