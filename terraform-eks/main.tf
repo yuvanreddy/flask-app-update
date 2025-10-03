@@ -24,11 +24,11 @@ module "eks" {
 
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
-
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-
-  enable_irsa           = var.enable_irsa
+  
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  
+  enable_irsa          = var.enable_irsa
   enable_alb_controller = var.enable_alb_controller
 
   tags = merge(
@@ -46,14 +46,14 @@ module "node_group" {
   source = "./modules/node-group"
 
   cluster_name = module.eks.cluster_name
-
-  subnet_ids       = module.vpc.private_subnet_ids
-  instance_types   = var.node_instance_types
-  disk_size        = var.node_disk_size
-  desired_capacity = var.desired_capacity
-  min_capacity     = var.min_capacity
-  max_capacity     = var.max_capacity
-
+  
+  subnet_ids         = module.vpc.private_subnet_ids
+  instance_types     = var.node_instance_types
+  disk_size          = var.node_disk_size
+  desired_capacity   = var.desired_capacity
+  min_capacity       = var.min_capacity
+  max_capacity       = var.max_capacity
+  
   enable_cluster_autoscaler = var.enable_cluster_autoscaler
 
   tags = merge(
