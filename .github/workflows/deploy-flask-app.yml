@@ -7,6 +7,7 @@ on:
       - 'app.py'
       - 'requirements.txt'
       - 'Dockerfile'
+      - 'k8s/**'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -86,6 +87,11 @@ jobs:
           - name: ${REG_SECRET}
           EOF
 
+      # --- Create Deployment ---
+      - name: Deploy Flask Application
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+
       # --- Optional: create Service if missing (ClusterIP on port 80 -> containerPort BACKEND_PORT) ---
       - name: Ensure Service exists
         run: |
@@ -108,20 +114,6 @@ jobs:
             type: ClusterIP
           EOF
           fi
-
-      # --- Patch Deployment to use SA + imagePullSecret (idempotent) ---
-      - name: Patch Deployment for SA and imagePullSecrets
-        run: |
-          kubectl -n "${NAMESPACE}" patch deploy "${DEPLOYMENT}" --type='json' -p='[
-            {"op":"add","path":"/spec/template/spec/serviceAccountName","value":"'${APP_SA}'"},
-            {"op":"add","path":"/spec/template/spec/imagePullSecrets","value":[{"name":"'${REG_SECRET}'"}]}
-          ]' || echo "Patch already applied or deployment not found yet; continuing."
-
-      # --- Optional: set image at deploy-time (if ENV IMAGE is defined as a secret or env) ---
-      - name: Set image tag on Deployment (optional)
-        if: ${{ env.IMAGE != '' }}
-        run: |
-          kubectl -n "${NAMESPACE}" set image deploy/${DEPLOYMENT} ${CONTAINER}=${IMAGE} --record || true
 
       # --- Ensure ALB Ingress exists (internet-facing) ---
       - name: Ensure Ingress (AWS Load Balancer Controller) exists
@@ -154,10 +146,9 @@ jobs:
           EOF
           fi
 
-      # --- Restart pods to ensure fresh pull with creds ---
-      - name: Rollout restart and wait
+      # --- Wait for rollout to complete ---
+      - name: Wait for deployment rollout
         run: |
-          kubectl -n "${NAMESPACE}" rollout restart deploy "${DEPLOYMENT}"
           kubectl -n "${NAMESPACE}" rollout status deploy "${DEPLOYMENT}" --timeout=300s
 
       # --- Wait for ALB hostname and print endpoints ---
