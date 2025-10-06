@@ -1,10 +1,437 @@
-# Flask DevOps Demo - Production-Ready CI/CD Pipeline
+# Flask DevOps Demo - Production-Ready CI/CD Pipeline with EKS
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Security](https://img.shields.io/badge/security-scanned-blue)
 ![Docker](https://img.shields.io/badge/docker-automated-blue)
+![Kubernetes](https://img.shields.io/badge/kubernetes-deployed-blue)
+![Terraform](https://img.shields.io/badge/terraform-infrastructure-blue)
 
-A complete DevOps and SRE project demonstrating production-ready CI/CD pipeline with comprehensive security scanning, containerization, and automated deployment to CloudSmith.
+A **complete enterprise-grade DevOps and SRE project** demonstrating production-ready CI/CD pipeline with comprehensive security scanning, containerization, automated deployment to AWS EKS, and full infrastructure as code.
+
+## 📋 Table of Contents
+
+- [Overview](#overview)
+- [Complete Architecture](#complete-architecture)
+- [Project Structure](#project-structure)
+- [Infrastructure Flow](#infrastructure-flow)
+- [Application Deployment Flow](#application-deployment-flow)
+- [Prerequisites](#prerequisites)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Rollback Procedures](#rollback-procedures)
+- [Best Practices](#best-practices)
+
+---
+
+## 🎯 Overview
+
+This project demonstrates a **complete production-grade DevOps pipeline** that includes:
+
+### **🏗️ Infrastructure as Code**
+- **AWS EKS Cluster** with managed node groups
+- **VPC** with public/private subnets and NAT gateways
+- **IAM Roles** with OIDC integration (no long-lived credentials)
+- **AWS Load Balancer Controller** for ALB provisioning
+- **cert-manager** for TLS certificate management
+
+### **🚀 Application Stack**
+- **Flask Application** with health checks and proper logging
+- **Multi-stage Docker builds** with security best practices
+- **Kubernetes Deployment** with rolling updates
+- **Application Load Balancer** with health checks
+
+### **🤖 Enterprise CI/CD**
+- **Automated Infrastructure** provisioning with Terraform
+- **Multi-stage security scanning** (SAST, dependency, container)
+- **Artifact Management** via CloudSmith
+- **GitHub Actions** with OIDC authentication
+
+**Tech Stack:**
+- Python 3.11 / Flask 3.0
+- Docker (Multi-stage builds)
+- Kubernetes (EKS)
+- Terraform (Infrastructure as Code)
+- GitHub Actions (CI/CD)
+- AWS (EKS, ALB, IAM)
+- CloudSmith (Container Registry)
+
+---
+
+## 🏗️ Complete Architecture
+
+```
+┌─────────────┐         ┌──────────────┐
+│   GitHub    │         │   AWS       │
+│  Repository │         │   Console   │
+└──────┬──────┘         └──────┬───────┘
+       │ (git push)             │
+       ↓                       │
+┌─────────────────────────────────────┐
+│      GitHub Actions Workflows       │
+├─────────────────────────────────────┤
+│  Workflow 1: Terraform Deploy        │
+│  ├─ terraform plan (validation)      │
+│  ├─ terraform apply (infrastructure) │
+│  └─ EKS cluster provisioning        │
+│                                     │
+│  Workflow 2: Application Deploy      │
+│  ├─ Security Scanning               │
+│  │  ├─ Bandit (Python SAST)         │
+│  │  ├─ Safety (Dependencies)        │
+│  │  └─ Trivy (Container)            │
+│  ├─ Docker Build & Push             │
+│  └─ Kubernetes Deployment           │
+└──────┬──────────────────────────────┘
+       │
+       ↓
+┌─────────────────────────────────────┐
+│         AWS Infrastructure          │
+├─────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐   │
+│  │   EKS       │  │   Cloud-    │   │
+│  │  Cluster    │  │   Smith     │   │
+│  │             │  │  Registry   │   │
+│  │ ┌─────────┐ │  │             │   │
+│  │ │   ALB   │ │  │             │   │
+│  │ │Controller│ │  │             │   │
+│  │ └─────────┘ │  │             │   │
+│  │             │  │             │   │
+│  │ Flask App  │  │             │   │
+│  │ Deployment │  │             │   │
+│  └─────────────┘  └─────────────┘   │
+└─────────────────────────────────────┘
+```
+
+---
+
+## 📁 Project Structure
+
+```
+MyApp/
+├── 🚀 Application Code
+│   ├── app.py (Flask application)
+│   ├── requirements.txt (Python dependencies)
+│   ├── Dockerfile (Container definition)
+│   └── k8s/deployment.yaml (Kubernetes manifests)
+│
+├── 🏗️ Infrastructure (Terraform)
+│   └── terraform-eks/ (EKS cluster, VPC, IAM, etc.)
+│       ├── main.tf (EKS cluster, VPC, ALB controller)
+│       ├── modules/ (IAM, ALB controller, etc.)
+│       ├── variables.tf (Input variables)
+│       ├── outputs.tf (Output values)
+│       └── kubernetes/ (Additional K8s resources)
+│
+├── 🤖 CI/CD Pipelines
+│   └── .github/workflows/
+│       ├── build-deploy-app.yml (App deployment)
+│       └── terraform-deploy.yml (Infrastructure management)
+│
+├── 📚 Documentation
+│   ├── README.md (This file)
+│   └── AWS-LOAD-BALANCER-CONTROLLER.md (ALB setup guide)
+│
+└── ⚙️ Configuration
+    ├── .bandit (Security scanner config)
+    └── .dockerignore (Docker exclusions)
+```
+
+---
+
+## 🔄 Complete Deployment Flow
+
+### **Phase 1: Infrastructure Provisioning** 🏗️
+**Triggered by:** Changes to `terraform-eks/**` files
+
+#### **1. Terraform Plan** (`terraform-deploy.yml`)
+```yaml
+├── Terraform Format Check
+├── Terraform Validate
+├── tfsec (Terraform Security Scanner)
+├── Checkov (IaC Security Scanner)
+└── Generate execution plan
+```
+
+#### **2. Terraform Apply** (Manual approval required)
+```yaml
+├── Configure AWS Credentials (OIDC)
+├── Terraform Init & Apply
+├── Create EKS cluster (flask-eks)
+├── Setup VPC (public/private subnets)
+├── Create IAM roles (GitHub OIDC)
+├── Install ALB controller
+├── Install cert-manager
+└── Generate cluster outputs
+```
+
+**Creates:**
+- ✅ **EKS Cluster** with managed node groups
+- ✅ **VPC** with proper subnet configuration
+- ✅ **IAM Roles** with OIDC integration
+- ✅ **ALB Controller** for load balancer management
+- ✅ **cert-manager** for TLS certificates
+
+### **Phase 2: Application Deployment** 🚀
+**Triggered by:** Changes to `app.py`, `requirements.txt`, `Dockerfile`, `k8s/**`
+
+#### **1. Security Scanning** (`build-deploy-app.yml`)
+```yaml
+├── Checkout code
+├── Setup Python 3.11
+├── Install dependencies
+├── Bandit (Python SAST)
+├── Safety (Dependency vulnerabilities)
+└── Upload security reports
+```
+
+#### **2. Docker Build & Push**
+```yaml
+├── Setup Docker Buildx
+├── Login to CloudSmith
+├── Extract metadata & tags
+├── Build Docker image (multi-stage)
+├── Trivy container scan
+└── Push to CloudSmith registry
+```
+
+#### **3. Kubernetes Deployment**
+```yaml
+├── Configure AWS credentials (OIDC)
+├── Update kubeconfig for EKS
+├── Create/Update deployment (flask-app)
+├── Create/Update service (flask-svc)
+├── Create/Update ingress (flask-alb)
+├── Wait for ALB provisioning (up to 10 min)
+└── Display application URLs
+```
+
+**Results:**
+- 🌐 **Main App:** `http://your-alb-hostname/`
+- 🏥 **Health Check:** `http://your-alb-hostname/health`
+
+---
+
+## ⚙️ Configuration
+
+### **Required GitHub Secrets**
+
+Configure these secrets in your GitHub repository:
+
+| Secret Name | Description | Example |
+|-------------|-------------|---------|
+| `AWS_ROLE_TO_ASSUME` | IAM role ARN for GitHub Actions | `arn:aws:iam::123456789:role/github-actions-role` |
+| `CLOUDSMITH_USERNAME` | CloudSmith username | `flask-sample-app` |
+| `CLOUDSMITH_API_KEY` | CloudSmith API key | `clsk_xxxxxxxxxxxxx` |
+| `CLOUDSMITH_REPO` | CloudSmith repo path | `flask-sample-app/flask-sample-app` |
+
+### **Infrastructure Variables**
+
+The Terraform configuration uses these variables (defined in `terraform-eks/terraform.tfvars`):
+
+```hcl
+# AWS Configuration
+region = "us-east-1"
+environment = "prod"
+
+# EKS Configuration
+cluster_name = "flask-eks"
+cluster_version = "1.28"
+
+# Network Configuration
+vpc_cidr = "10.0.0.0/16"
+private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+public_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+# Node Group Configuration
+node_instance_types = ["t3.medium"]
+node_group_min_size = 2
+node_group_max_size = 4
+node_group_desired_size = 2
+
+# GitHub Configuration
+github_org = "your-org"
+github_repo = "flask-app-update"
+```
+
+---
+
+## 🚨 Troubleshooting
+
+### **Error: `deployments.apps "flask-app" not found`**
+
+**Problem:** Workflow tries to update a deployment that doesn't exist
+
+**Root Cause:** 
+- First deployment (deployment never created)
+- EKS cluster was destroyed and recreated
+- kubectl not connected to correct cluster
+
+**Solutions:**
+
+#### **1. Verify kubectl connection:**
+```bash
+kubectl config current-context
+kubectl get nodes
+```
+
+#### **2. Check if deployment exists:**
+```bash
+kubectl get deployments -n default
+```
+
+#### **3. If deployment doesn't exist:**
+```bash
+# The workflow will create it automatically on next run
+# Or create manually:
+kubectl apply -f k8s/deployment.yaml
+```
+
+#### **4. If kubectl not configured:**
+```bash
+aws eks update-kubeconfig --name flask-eks --region us-east-1
+```
+
+### **Error: `terraform destroy` removed everything**
+
+**Problem:** Destroyed EKS cluster but workflow tries to deploy
+
+**Solution:**
+1. Recreate infrastructure using `terraform-deploy.yml` → `apply`
+2. Wait for cluster to be ready (10-15 minutes)
+3. Application deployment will work automatically
+
+---
+
+## 🔄 Rollback Procedures
+
+### **1. kubectl Rollback (Fastest)**
+```bash
+# Check deployment history
+kubectl rollout history deployment/flask-app -n default
+
+# Rollback to previous version
+kubectl rollout undo deployment/flask-app -n default
+
+# Rollback to specific revision
+kubectl rollout undo deployment/flask-app --to-revision=2 -n default
+```
+
+### **2. Git-based Rollback**
+```bash
+# View recent commits
+git log --oneline -10
+
+# Revert to specific commit
+git revert <commit-hash>
+
+# Or reset to previous commit (destructive)
+git reset --hard <commit-hash>
+
+# Push and trigger deployment
+git push origin main
+```
+
+### **3. Image-based Rollback**
+```bash
+# Use workflow_dispatch with specific image tag
+# Go to GitHub Actions → "Build, Push & Deploy Flask App"
+# Enter previous image tag in workflow_dispatch inputs
+```
+
+---
+
+## 🛠️ Manual Operations
+
+### **Infrastructure Management**
+```bash
+# Plan infrastructure changes
+cd terraform-eks
+terraform plan -var="cluster_name=flask-eks"
+
+# Apply infrastructure (requires manual approval)
+terraform apply
+
+# Destroy infrastructure (DANGER!)
+terraform destroy
+```
+
+### **Application Management**
+```bash
+# Check deployment status
+kubectl get deployments -n default
+
+# View application logs
+kubectl logs -l app=flask-app -n default
+
+# Scale deployment
+kubectl scale deployment flask-app --replicas=3 -n default
+
+# Update deployment image
+kubectl set image deployment/flask-app flask=your-new-image:tag -n default
+
+# Check ALB status
+kubectl get ingress -n default
+```
+
+### **Image Management**
+```bash
+# List available images in CloudSmith
+# Login to CloudSmith web interface
+
+# Pull specific image version
+docker pull docker.cloudsmith.io/flask-sample-app/flask-sample-app/flask-devops-demo:v1.0.0
+
+# Check image tags in workflow runs
+# Go to GitHub Actions → Recent runs → Check image-tag output
+```
+
+---
+
+## ✅ Current Status
+
+- ✅ **Infrastructure:** Needs to be recreated (destroyed)
+- ✅ **Application Code:** Ready to deploy
+- ✅ **CI/CD Pipeline:** Configured and working
+- ✅ **Security:** All scanners configured
+- ✅ **Rollback:** Multiple rollback options available
+
+## 🎓 Key Features Implemented
+
+### **🔒 Security First**
+- Multi-layer security scanning (SAST, dependency, container)
+- IAM roles with OIDC (no long-lived credentials)
+- Security reports in GitHub Security tab
+- RBAC with service accounts
+
+### **🏗️ Infrastructure as Code**
+- Complete EKS cluster provisioning
+- VPC with proper networking
+- ALB controller for load balancing
+- Automated certificate management
+
+### **🚀 Production-Ready Deployment**
+- Rolling updates with zero downtime
+- Health checks and readiness probes
+- Automatic ALB provisioning
+- URL generation and display
+
+### **🤖 Enterprise CI/CD**
+- GitHub Actions with OIDC authentication
+- Automated testing and security gates
+- Artifact versioning and management
+- Comprehensive logging and monitoring
+
+---
+
+## 🎯 Next Steps
+
+1. **Recreate Infrastructure** using `terraform-deploy.yml` → `apply`
+2. **Wait for EKS cluster** to be ready (10-15 minutes)
+3. **Application deployment** will work automatically on next code change
+4. **Access your application** via the displayed URLs
+
+Your project is a **complete enterprise-grade Flask application** with production-ready infrastructure, security, and deployment automation! 🚀
 
 ## 📋 Table of Contents
 
