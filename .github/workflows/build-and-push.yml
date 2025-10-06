@@ -2,10 +2,10 @@ name: Build, Scan & Push to CloudSmith
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # Enables manual trigger button
+    branches: [ master ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -38,14 +38,14 @@ jobs:
 
       - name: Run Bandit (SAST - Python Security)
         run: |
-          echo "🔍 Running Bandit security scan..."
+          echo "Running Bandit security scan..."
           bandit -r . -ll -f json -o bandit-report.json || true
           bandit -r . -ll -f screen
         continue-on-error: false
 
       - name: Run Safety (Dependency Vulnerability Scan)
         run: |
-          echo "🔍 Scanning dependencies for known vulnerabilities..."
+          echo "Scanning dependencies for known vulnerabilities..."
           pip install safety
           safety scan --json > safety-report.json || true
           safety scan
@@ -65,32 +65,13 @@ jobs:
           name: safety-security-report
           path: safety-report.json
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        continue-on-error: true
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Upload Security Reports to S3
-        continue-on-error: true
-        run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          S3_PATH="s3://flask-app-artifact/security-reports/${BRANCH_NAME}/${TIMESTAMP}"
-          
-          echo "📦 Uploading security reports to S3..."
-          aws s3 cp bandit-report.json ${S3_PATH}/bandit-report.json
-          aws s3 cp safety-report.json ${S3_PATH}/safety-report.json || true
-          
-          echo "✅ Reports uploaded to: ${S3_PATH}"
-          echo "S3_REPORT_PATH=${S3_PATH}" >> $GITHUB_ENV
-
   build-and-push:
     name: Build, Scan Image & Push
     runs-on: ubuntu-latest
     needs: security-scan
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+      image-full: ${{ steps.image-info.outputs.full-image }}
     
     steps:
       - name: Checkout code
@@ -112,11 +93,7 @@ jobs:
         with:
           images: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=master-
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build Docker image
@@ -153,26 +130,6 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        continue-on-error: true
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Upload Trivy Reports to S3
-        continue-on-error: true
-        run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          S3_PATH="s3://flask-app-artifact/trivy-reports/${BRANCH_NAME}/${TIMESTAMP}"
-          
-          echo "📦 Uploading Trivy scan results to S3..."
-          aws s3 cp trivy-results.sarif ${S3_PATH}/trivy-results.sarif
-          
-          echo "✅ Trivy reports uploaded to: ${S3_PATH}"
-
       - name: Push to CloudSmith
         uses: docker/build-push-action@v5
         if: github.event_name != 'pull_request'
@@ -184,8 +141,42 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Set image info for deployment
+        id: image-info
+        run: |
+          IMAGE_TAG="master-${{ github.sha }}"
+          FULL_IMAGE="docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Built and pushed: ${FULL_IMAGE}"
+
       - name: Image digest
-        run: echo "Image pushed with digest ${{ steps.meta.outputs.digest }}"
+        run: |
+          echo "Image pushed with tags:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+  trigger-deployment:
+    name: Trigger Deployment
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: Trigger Deploy Workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-flask-app.yml',
+              ref: 'master',
+              inputs: {
+                image_tag: '${{ needs.build-and-push.outputs.image-tag }}'
+              }
+            });
+            console.log('Deployment workflow triggered with image tag: ${{ needs.build-and-push.outputs.image-tag }}');
 
   summary:
     name: Pipeline Summary
@@ -196,11 +187,14 @@ jobs:
     steps:
       - name: Generate Summary
         run: |
-          echo "## 🚀 Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **Security Scan**: Completed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **Docker Build**: Completed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **Image Scan**: Completed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **CloudSmith Push**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "**Security Scan**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "**Docker Build**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Scan**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "**CloudSmith Push**: Completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 **Image**: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image**: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.build-and-push.outputs.image-tag }}" != "" ]; then
+            echo "**Tag**: ${{ needs.build-and-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
