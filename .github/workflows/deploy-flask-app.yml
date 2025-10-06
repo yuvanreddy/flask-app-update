@@ -5,8 +5,8 @@ on:
     inputs:
       image_tag:
         description: 'Docker image tag to deploy'
-        required: true
-        default: string
+        required: false
+        default: "master"
 
 permissions:
   id-token: write
