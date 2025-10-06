@@ -2,14 +2,15 @@ name: Build, Push & Deploy Flask App
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, develop ]
     paths:
       - 'app.py'
       - 'requirements.txt'
       - 'Dockerfile'
       - 'k8s/**'
+      - '.github/workflows/**'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, develop ]
     paths:
       - 'app.py'
       - 'requirements.txt'
@@ -311,17 +312,33 @@ jobs:
         run: |
           kubectl -n "${NAMESPACE}" rollout status deploy "${DEPLOYMENT}" --timeout=300s
 
-      # --- Get deployment status ---
-      - name: Get deployment status
+      # --- Wait for ALB hostname and print endpoints ---
+      - name: Fetch ALB address
+        id: alb
         run: |
-          echo "=== Pods ==="
-          kubectl -n "${NAMESPACE}" get pods -l app=${DEPLOYMENT} -o wide || true
-          echo
-          echo "=== Service ==="
-          kubectl -n "${NAMESPACE}" get svc ${SERVICE} -o wide || true
-          echo
-          echo "=== Ingress ==="
-          kubectl -n "${NAMESPACE}" get ingress ${INGRESS_NAME} -o wide || true
+          echo "Waiting for Ingress address ..."
+          for i in $(seq 1 60); do
+            HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$HOST" ]; then echo "host=$HOST" >> $GITHUB_OUTPUT; break; fi
+            sleep 10
+          done
+          echo "host=${HOST}" >> $GITHUB_OUTPUT
+
+      # --- Display Application URLs ---
+      - name: Display Application URLs
+        run: |
+          HOST="${{ steps.alb.outputs.host }}"
+          if [ -n "$HOST" ]; then
+            echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🌐 **App URL:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
+            echo "🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⏳ **ALB is still provisioning...**" >> $GITHUB_STEP_SUMMARY
+            echo "Run: kubectl get ingress -n ${NAMESPACE} to check status" >> $GITHUB_STEP_SUMMARY
+          fi
 
   summary:
     name: Deployment Summary
