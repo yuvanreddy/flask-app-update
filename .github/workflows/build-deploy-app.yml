@@ -323,8 +323,8 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "🌐 **App URL:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
-              echo "🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+              echo "**Main App:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
+              echo "**Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
               break
