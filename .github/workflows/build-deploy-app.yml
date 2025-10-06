@@ -271,12 +271,19 @@ jobs:
 
           echo "Deploying image: ${FULL_IMAGE}"
 
+          # Check if deployment exists, if not create it
+          if ! kubectl -n "${NAMESPACE}" get deploy "${DEPLOYMENT}" >/dev/null 2>&1; then
+            echo "Deployment ${DEPLOYMENT} not found, creating it..."
+            kubectl apply -f k8s/deployment.yaml
+            sleep 10  # Wait for deployment to be ready
+          fi
+
           # Update deployment with new image
           kubectl set image deployment/${DEPLOYMENT} ${CONTAINER}=${FULL_IMAGE} -n ${NAMESPACE}
 
           # Add annotation to force rolling update
           kubectl patch deployment ${DEPLOYMENT} -n ${NAMESPACE} -p \
-            "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$(date +'%s')\"}}}}}"
+            "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$(date +'%s')\"}}}}" >/dev/null 2>&1 || true
 
       # --- Ensure ALB Ingress exists ---
       - name: Ensure Ingress exists
