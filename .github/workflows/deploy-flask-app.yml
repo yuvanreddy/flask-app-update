@@ -17,7 +17,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: flask-eks-master
+  EKS_CLUSTER_NAME: flask-eks
   NAMESPACE: default
 
   # Workload names
