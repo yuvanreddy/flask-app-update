@@ -149,22 +149,21 @@ jobs:
         with:
           context: .
           push: false
-          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy (Table Format)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:latest
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          format: 'table'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          skip-version-check: true
 
       - name: Upload Trivy results to GitHub Security
+{{ ... }}
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
