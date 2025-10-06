@@ -320,6 +320,15 @@ jobs:
               echo "✅ ALB Ready! Hostname: $HOST"
               echo "host=$HOST" >> $GITHUB_OUTPUT
 
+              echo ""
+              echo "🎉 APPLICATION URLs:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📱 Main App:      http://$HOST/"
+              echo "🏥 Health Check:   http://$HOST${HEALTHCHECK_PATH}"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo ""
+
+              # Also write to step summary for GitHub UI
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
