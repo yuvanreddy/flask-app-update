@@ -9,12 +9,14 @@ on:
       - 'Dockerfile'
       - 'k8s/**'
       - '.github/workflows/**'
+      - '**.py'
   pull_request:
     branches: [ main, master, develop ]
     paths:
       - 'app.py'
       - 'requirements.txt'
       - 'Dockerfile'
+      - '**.py'
   workflow_dispatch:
     inputs:
       force_deploy:
@@ -307,37 +309,38 @@ jobs:
           EOF
           fi
 
-      # --- Wait for deployment ---
-      - name: Wait for deployment
-        run: |
-          kubectl -n "${NAMESPACE}" rollout status deploy "${DEPLOYMENT}" --timeout=300s
-
       # --- Wait for ALB hostname and print endpoints ---
-      - name: Fetch ALB address
+      - name: Fetch ALB address and Display URLs
         id: alb
         run: |
-          echo "Waiting for Ingress address ..."
+          echo "⏳ Waiting for ALB to be ready..."
           for i in $(seq 1 60); do
             HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-            if [ -n "$HOST" ]; then echo "host=$HOST" >> $GITHUB_OUTPUT; break; fi
+            if [ -n "$HOST" ]; then
+              echo "✅ ALB Ready! Hostname: $HOST"
+              echo "host=$HOST" >> $GITHUB_OUTPUT
+
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "🌐 **App URL:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
+              echo "🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            echo "Waiting... (attempt $i/60)"
             sleep 10
           done
-          echo "host=${HOST}" >> $GITHUB_OUTPUT
 
-      # --- Display Application URLs ---
-      - name: Display Application URLs
-        run: |
-          HOST="${{ steps.alb.outputs.host }}"
-          if [ -n "$HOST" ]; then
-            echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
+          if [ -z "$HOST" ]; then
+            echo "⚠️ ALB not ready after 10 minutes"
+            echo "host=pending" >> $GITHUB_OUTPUT
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🌐 **App URL:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
-            echo "🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
-          else
             echo "⏳ **ALB is still provisioning...**" >> $GITHUB_STEP_SUMMARY
-            echo "Run: kubectl get ingress -n ${NAMESPACE} to check status" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Current Status:**" >> $GITHUB_STEP_SUMMARY
+            kubectl get ingress ${INGRESS_NAME} -n ${NAMESPACE} -o wide >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Unable to get status" >> $GITHUB_STEP_SUMMARY
           fi
 
   summary:
@@ -345,34 +348,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [security-scan, build-and-push, deploy]
     if: always()
-    outputs:
-      alb-hostname: ${{ steps.get-alb.outputs.hostname }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: 'latest'
-
-      - name: Update kubeconfig for EKS
-        run: |
-          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-
-      - name: Get ALB hostname
-        id: get-alb
-        run: |
-          HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          echo "hostname=$HOST" >> $GITHUB_OUTPUT
-
       - name: Generate Summary
         run: |
           echo "## 🚀 Build, Push & Deploy Summary" >> $GITHUB_STEP_SUMMARY
@@ -398,22 +375,6 @@ jobs:
             echo "❌ **Kubernetes Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
           fi
 
-          # Display Application URLs
-          HOST="${{ steps.get-alb.outputs.hostname }}"
-          if [ -n "$HOST" ] && [ "$HOST" != "" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🌐 **App URL:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
-            echo "🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⏳ **ALB is still provisioning...**" >> $GITHUB_STEP_SUMMARY
-            echo "Run: kubectl get ingress -n ${NAMESPACE} to check status" >> $GITHUB_STEP_SUMMARY
-          fi
-
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Image**: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
 
@@ -426,3 +387,6 @@ jobs:
           if [ "${{ github.event.head_commit.message }}" != "" ]; then
             echo "**Commit**: ${{ github.event.head_commit.message }}" >> $GITHUB_STEP_SUMMARY
           fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note**: Application URLs are displayed in the deploy job above ↑" >> $GITHUB_STEP_SUMMARY
