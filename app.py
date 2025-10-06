@@ -28,7 +28,7 @@ def home():
 def health():
     """Health check endpoint for monitoring"""
     return jsonify({
-        "status": "healthy",
+        "status": "My Name Is Rajavardhan Reddy",
         "service": "flask-devops-demo"
     }), 200
 
