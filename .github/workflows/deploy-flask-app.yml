@@ -6,7 +6,7 @@ on:
       image_tag:
         description: 'Docker image tag to deploy'
         required: false
-        default: "master"
+        default: "latest"
 
 permissions:
   id-token: write
