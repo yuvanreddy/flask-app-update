@@ -17,18 +17,18 @@ env:
   EKS_CLUSTER_NAME: flask-eks
   NAMESPACE: default
 
-  # Workload names
+  # Workload identifiers
   DEPLOYMENT: flask-app
   CONTAINER: flask
   SERVICE: flask-svc
   APP_SA: flask-app-sa
 
-  # Cloudsmith (EDIT THESE 3 TO MATCH YOUR ORG/REPO/IMAGE)
+  # Cloudsmith config (update if org/repo changes)
   REG_SERVER: docker.cloudsmith.io
-  CLOUDSMITH_REPO: flask-sample-app/flask-sample-app   # <-- your org/repo path
-  IMAGE_NAME: flask-devops-demo                        # <-- your image name
+  CLOUDSMITH_REPO: flask-sample-app/flask-sample-app
+  IMAGE_NAME: flask-devops-demo
 
-  # Ingress/ALB (optional)
+  # Optional ALB ingress
   INGRESS_NAME: flask-alb
   HEALTHCHECK_PATH: /health
 
@@ -40,7 +40,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS (OIDC)
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -51,15 +51,15 @@ jobs:
         with:
           version: "latest"
 
-      - name: Update kubeconfig
+      - name: Update kubeconfig for EKS
         run: |
           aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      - name: Ensure namespace
+      - name: Ensure namespace exists
         run: |
           kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
 
-      - name: Create/Update Cloudsmith imagePullSecret
+      - name: Create or update Cloudsmith imagePullSecret
         run: |
           kubectl create secret docker-registry cloudsmith-regcred \
             --namespace "${NAMESPACE}" \
@@ -69,95 +69,52 @@ jobs:
             --docker-email="devnull@example.com" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Ensure ServiceAccount uses imagePullSecret
+      - name: Ensure workload ServiceAccount uses imagePullSecret
         run: |
-          kubectl apply -f - <<EOF
+          kubectl apply -f - <<'EOF'
           apiVersion: v1
           kind: ServiceAccount
           metadata:
-            name: ${APP_SA}
-            namespace: ${NAMESPACE}
+            name: flask-app-sa
+            namespace: default
           imagePullSecrets:
-          - name: cloudsmith-regcred
+            - name: cloudsmith-regcred
           EOF
 
-      - name: Build image reference (with validations)
+      - name: Build full image reference
         id: img
         run: |
           set -e
           IMAGE_TAG="${{ github.event.inputs.image_tag }}"
-          test -n "${REG_SERVER}" || { echo "REG_SERVER is empty"; exit 1; }
-          test -n "${CLOUDSMITH_REPO}" || { echo "CLOUDSMITH_REPO is empty"; exit 1; }
-          test -n "${IMAGE_NAME}" || { echo "IMAGE_NAME is empty"; exit 1; }
-          test -n "${IMAGE_TAG}" || { echo "image_tag input is empty"; exit 1; }
+          test -n "${REG_SERVER}" || { echo "❌ REG_SERVER empty"; exit 1; }
+          test -n "${CLOUDSMITH_REPO}" || { echo "❌ CLOUDSMITH_REPO empty"; exit 1; }
+          test -n "${IMAGE_NAME}" || { echo "❌ IMAGE_NAME empty"; exit 1; }
+          test -n "${IMAGE_TAG}" || { echo "❌ image_tag input empty"; exit 1; }
 
           FULL_IMAGE="${REG_SERVER}/${CLOUDSMITH_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-          # safety checks
-          echo "${FULL_IMAGE}" | grep -Eq '^[^ ]+$' || { echo "Image contains spaces"; exit 1; }
-          echo "${FULL_IMAGE}" | grep -q ':$' && { echo "Image ends with colon"; exit 1; }
           echo "FULL_IMAGE=${FULL_IMAGE}" >> $GITHUB_ENV
-          echo "Deploying image: ${FULL_IMAGE}"
-          {
-            echo "### Deploying"
-            echo "- Image: \`${FULL_IMAGE}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploying ${FULL_IMAGE}"
 
-      - name: Ensure Deployment exists (create if missing)
+      - name: Create Deployment (if not exists)
+        shell: bash
         run: |
           if ! kubectl -n "${NAMESPACE}" get deploy "${DEPLOYMENT}" >/dev/null 2>&1; then
-            echo "Creating initial Deployment ${DEPLOYMENT}"
-            kubectl apply -f - <<EOF
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: ${DEPLOYMENT}
-              namespace: ${NAMESPACE}
-              labels: { app: ${DEPLOYMENT} }
-            spec:
-              replicas: 2
-              selector:
-                matchLabels: { app: ${DEPLOYMENT} }
-              template:
-                metadata:
-                  labels: { app: ${DEPLOYMENT} }
-                  annotations:
-                    deployedAt: "$(date +%s)"
-                spec:
-                  serviceAccountName: ${APP_SA}
-                  containers:
-                    - name: ${CONTAINER}
-                      image: ${FULL_IMAGE}
-                      imagePullPolicy: Always
-                      ports:
-                        - containerPort: 5000
-                          name: http
-                      readinessProbe:
-                        httpGet: { path: /health, port: 5000 }
-                        initialDelaySeconds: 10
-                        periodSeconds: 5
-                        timeoutSeconds: 3
-                        failureThreshold: 6
-                      livenessProbe:
-                        httpGet: { path: /health, port: 5000 }
-                        initialDelaySeconds: 20
-                        periodSeconds: 10
-                        timeoutSeconds: 5
-                        failureThreshold: 3
-                      resources:
-                        requests: { cpu: 100m, memory: 128Mi }
-                        limits:   { cpu: 200m, memory: 256Mi }
-            EOF
+            echo "Creating initial deployment ${DEPLOYMENT}"
+            kubectl create deployment "${DEPLOYMENT}" \
+              --image="${FULL_IMAGE}" -n "${NAMESPACE}"
+            kubectl -n "${NAMESPACE}" scale deployment "${DEPLOYMENT}" --replicas=2
+            kubectl -n "${NAMESPACE}" expose deployment "${DEPLOYMENT}" --name="${SERVICE}" \
+              --port=80 --target-port=5000 --type=ClusterIP
           fi
 
-      - name: Set image & annotate
+      - name: Update image and force rollout
         run: |
           kubectl -n "${NAMESPACE}" set image deploy/${DEPLOYMENT} ${CONTAINER}="${FULL_IMAGE}" --record
           kubectl -n "${NAMESPACE}" annotate deploy/${DEPLOYMENT} deployedAt="$(date +%s)" --overwrite
-          # Ensure imagePullPolicy Always so we don't reuse cached digest
-          kubectl -n "${NAMESPACE}" patch deploy ${DEPLOYMENT} --type='merge' -p '{"spec":{"template":{"spec":{"containers":[{"name":"'${CONTAINER}'","imagePullPolicy":"Always"}]}}}}'
+          kubectl -n "${NAMESPACE}" patch deploy ${DEPLOYMENT} --type='merge' -p \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"'${CONTAINER}'","imagePullPolicy":"Always"}]}}}}'
 
-      - name: Rollout & diagnostics
+      - name: Wait for rollout and show diagnostics if fail
         run: |
           set -e
           if ! kubectl -n "${NAMESPACE}" rollout status deploy/${DEPLOYMENT} --timeout=300s; then
@@ -170,18 +127,12 @@ jobs:
               echo "---- Describe $p ----"
               kubectl -n "${NAMESPACE}" describe pod "$p" || true
               echo "---- Logs $p ----"
-              kubectl -n "${NAMESPACE}" logs "$p" --container=${CONTAINER} --tail=200 || true
+              kubectl -n "${NAMESPACE}" logs "$p" --container=${CONTAINER} --tail=50 || true
             done
             exit 1
           fi
 
-      - name: Show endpoints
+      - name: Show Service & Ingress
         run: |
-          echo "=== Pods ==="
-          kubectl -n "${NAMESPACE}" get pods -l app=${DEPLOYMENT} -o wide || true
-          echo
-          echo "=== Service ==="
           kubectl -n "${NAMESPACE}" get svc ${SERVICE} -o wide || true
-          echo
-          echo "=== Ingress ==="
           kubectl -n "${NAMESPACE}" get ingress ${INGRESS_NAME} -o wide || true
