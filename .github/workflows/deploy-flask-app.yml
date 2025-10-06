@@ -26,6 +26,8 @@ env:
   REG_SERVER: docker.cloudsmith.io
   REG_SECRET: cloudsmith-regcred
   APP_SA: flask-app-sa
+  CLOUDSMITH_REPO: flask-sample-app/flask-sample-app   # ✅ fill this
+  IMAGE_NAME: flask-devops-demo                        # ✅ fill this
 
   # Ingress/ALB settings
   INGRESS_NAME: flask-alb
