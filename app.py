@@ -19,7 +19,7 @@ app.config['DEBUG'] = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 def home():
     logger.info("Home endpoint accessed")
     return jsonify({
-        "message": "Flask DevOps Demo Application",
+        "message": "YuVan Reddy , JasWik Reddy",
         "status": "running",
         "version": "1.0.0"
     })
