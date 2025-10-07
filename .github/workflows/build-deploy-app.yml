@@ -186,6 +186,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Show expected sub
+        run: |
+          echo "GITHUB_REPOSITORY=${{ github.repository }}"
+          echo "GITHUB_REF=${{ github.ref }}"
+          echo "Expected sub: repo:${{ github.repository }}:ref:${{ github.ref }}"
+
+      - name: Caller identity (should be assumed-role)
+        run: aws sts get-caller-identity
+
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
