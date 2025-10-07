@@ -231,6 +231,11 @@ jobs:
           - name: ${REG_SECRET}
           EOF
 
+      - name: Ensure PersistentVolumeClaims exist
+        run: |
+          echo "📦 Creating PersistentVolumeClaims..."
+          kubectl apply -f k8s/persistent-storage.yaml
+
       - name: Ensure Service exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
