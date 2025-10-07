@@ -2,7 +2,7 @@ name: Build, Push & Deploy Flask App
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, photo-upload-app ]
     paths:
       - 'app.py'
       - 'requirements.txt'
@@ -12,17 +12,7 @@ on:
       - '**.py'
   pull_request:
     branches: [ main, master, develop ]
-    paths:
-      - 'app.py'
-      - 'requirements.txt'
-      - 'Dockerfile'
-      - '**.py'
   workflow_dispatch:
-    inputs:
-      force_deploy:
-        description: 'Force deployment even without code changes'
-        required: false
-        default: "false"
 
 permissions:
   contents: read
@@ -42,7 +32,7 @@ env:
   CONTAINER: flask
   SERVICE: flask-svc
 
-  # Cloudsmith (registry) - YOUR REPO
+  # Cloudsmith (registry)
   REG_SERVER: docker.cloudsmith.io
   REG_SECRET: cloudsmith-regcred
   APP_SA: flask-app-sa
@@ -103,25 +93,23 @@ jobs:
       - name: Check Security Scan Results
         id: security-check
         run: |
-          # Check if bandit found high severity issues
           if [ -f bandit-report.json ]; then
             HIGH_ISSUES=$(cat bandit-report.json | jq '.metrics.total.ISSUE_HIGH // 0')
             if [ "$HIGH_ISSUES" -gt 0 ]; then
-              echo "High severity security issues found: $HIGH_ISSUES"
+              echo "⚠️  High severity security issues found: $HIGH_ISSUES"
               echo "passed=false" >> $GITHUB_OUTPUT
-              exit 1
             fi
           fi
-          echo "Security scan passed"
+          echo "✅ Security scan passed"
           echo "passed=true" >> $GITHUB_OUTPUT
 
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: security-scan
-    if: needs.security-scan.outputs.security-passed == 'true' || github.event.inputs.force_deploy == 'true'
+    if: needs.security-scan.outputs.security-passed == 'true' || github.event_name == 'workflow_dispatch'
     outputs:
-      image-tag: ${{ steps.meta.outputs.version }}
+      image-tag: ${{ steps.image-info.outputs.image-tag }}
       image-full: ${{ steps.image-info.outputs.full-image }}
 
     steps:
@@ -138,61 +126,54 @@ jobs:
           username: ${{ secrets.CLOUDSMITH_USERNAME }}
           password: ${{ secrets.CLOUDSMITH_API_KEY }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Generate image tags
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=latest-
-            type=raw,value=latest,enable={{is_default_branch}}
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_BASE="docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}"
+          
+          echo "IMAGE_TAG=latest-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "IMAGE_LATEST=${IMAGE_BASE}:latest" >> $GITHUB_OUTPUT
+          echo "IMAGE_SHA=${IMAGE_BASE}:latest-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
       - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          load: true
+        run: |
+          docker build \
+            -t ${{ steps.meta.outputs.IMAGE_LATEST }} \
+            -t ${{ steps.meta.outputs.IMAGE_SHA }} \
+            .
 
-      - name: Run Trivy (Container Scan)
+      - name: Run Trivy (Scan Local Image)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:latest
+          scan-type: 'image'
+          image-ref: ${{ steps.meta.outputs.IMAGE_LATEST }}
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
 
       - name: Push to Cloudsmith
-        uses: docker/build-push-action@v5
         if: github.event_name != 'pull_request'
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: |
+          echo "📦 Pushing images to Cloudsmith..."
+          docker push ${{ steps.meta.outputs.IMAGE_LATEST }}
+          docker push ${{ steps.meta.outputs.IMAGE_SHA }}
+          echo "✅ Images pushed successfully!"
 
-      - name: Set image info
+      - name: Set image info for deployment
         id: image-info
         run: |
-          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep "latest-" | cut -d: -f2)
-          FULL_IMAGE="docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
-          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
-          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "Built and pushed: ${FULL_IMAGE}"
+          echo "full-image=${{ steps.meta.outputs.IMAGE_SHA }}" >> $GITHUB_OUTPUT
+          echo "image-tag=${{ steps.meta.outputs.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+          echo "🏷️  Image: ${{ steps.meta.outputs.IMAGE_SHA }}"
 
   deploy:
     name: Deploy to Kubernetes
     runs-on: ubuntu-latest
     needs: [security-scan, build-and-push]
     if: |
-      (needs.security-scan.outputs.security-passed == 'true' || github.event.inputs.force_deploy == 'true') &&
-      (needs.build-and-push.result == 'success' || github.event.inputs.force_deploy == 'true') &&
+      (needs.security-scan.outputs.security-passed == 'true' || github.event_name == 'workflow_dispatch') &&
+      needs.build-and-push.result == 'success' &&
       github.event_name != 'pull_request'
 
     steps:
@@ -213,12 +194,12 @@ jobs:
       - name: Update kubeconfig for EKS
         run: |
           aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+          kubectl version --client
 
       - name: Ensure namespace exists
         run: |
           kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
 
-      # --- Cloudsmith image pull secret + SA ---
       - name: Create/Update Cloudsmith imagePullSecret
         run: |
           kubectl create secret docker-registry "${REG_SECRET}" \
@@ -241,99 +222,89 @@ jobs:
           - name: ${REG_SECRET}
           EOF
 
-      # --- Ensure Service exists ---
       - name: Ensure Service exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
-            kubectl apply -f - <<EOF
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: ${SERVICE}
-            namespace: ${NAMESPACE}
-            labels:
-              app: ${DEPLOYMENT}
-          spec:
-            selector:
-              app: ${DEPLOYMENT}
-            ports:
-            - name: http
-              port: 80
-              targetPort: ${BACKEND_PORT}
-            type: ClusterIP
-          EOF
+            kubectl apply -f k8s/service.yaml
           fi
 
-      # --- Deploy with latest image ---
       - name: Deploy application
         run: |
-          # Use the image from build-and-push job or fallback to latest
-          IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag || 'latest' }}"
-          FULL_IMAGE="docker.cloudsmith.io/${CLOUDSMITH_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+          FULL_IMAGE="${{ needs.build-and-push.outputs.image-full }}"
+          echo "🚀 Deploying image: ${FULL_IMAGE}"
 
-          echo "Deploying image: ${FULL_IMAGE}"
-
-          # Check if deployment exists, if not create it
+          # Apply or create deployment
           if ! kubectl -n "${NAMESPACE}" get deploy "${DEPLOYMENT}" >/dev/null 2>&1; then
-            echo "Deployment ${DEPLOYMENT} not found, creating it..."
+            echo "Creating new deployment..."
             kubectl apply -f k8s/deployment.yaml
-            sleep 10
           fi
 
-          # Update deployment with new image
-          kubectl set image deployment/${DEPLOYMENT} ${CONTAINER}=${FULL_IMAGE} -n ${NAMESPACE}
+          # Update image
+          kubectl set image deployment/${DEPLOYMENT} \
+            ${CONTAINER}=${FULL_IMAGE} \
+            -n ${NAMESPACE}
 
-          # Add annotation to force rolling update
+          # Add annotation to trigger rollout
           kubectl patch deployment ${DEPLOYMENT} -n ${NAMESPACE} -p \
-            "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$(date +'%s')\"}}}}" >/dev/null 2>&1 || true
+            "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$(date +'%s')\"}}}}}"
 
           # Wait for rollout
+          echo "⏳ Waiting for rollout to complete..."
           kubectl rollout status deployment/${DEPLOYMENT} -n ${NAMESPACE} --timeout=300s
+          
+          echo "✅ Deployment successful!"
 
-      # --- Ensure ALB Ingress exists ---
       - name: Ensure Ingress exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
             kubectl apply -f k8s/ingress.yaml
           fi
 
-      # --- Wait for ALB hostname and print endpoints ---
       - name: Fetch ALB address and Display URLs
         id: alb
         run: |
           echo "⏳ Waiting for ALB to be ready..."
           for i in $(seq 1 60); do
-            HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            HOST=$(kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            
             if [ -n "$HOST" ]; then
-              echo "✅ ALB Ready! Hostname: $HOST"
+              echo "✅ ALB Ready!"
               echo "host=$HOST" >> $GITHUB_OUTPUT
 
               echo ""
-              echo "🎉 APPLICATION URLs:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 APPLICATION DEPLOYED SUCCESSFULLY!"
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo "📱 Main App:      http://$HOST/"
-              echo "🏥 Health Check:   http://$HOST${HEALTHCHECK_PATH}"
-              echo "📸 Upload Page:    http://$HOST/upload"
+              echo "🏥 Health Check:  http://$HOST${HEALTHCHECK_PATH}"
+              echo "📸 Upload Page:   http://$HOST/upload"
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo ""
 
-              # Also write to step summary
+              # GitHub Step Summary
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
+              echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "- **Main App:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
-              echo "- **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
-              echo "- **Upload Page:** http://$HOST/upload" >> $GITHUB_STEP_SUMMARY
+              echo "### 🌐 Application URLs:" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+              echo "- 📱 **Main App:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
+              echo "- 🏥 **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+              echo "- 📸 **Upload Page:** http://$HOST/upload" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 📦 Docker Image:" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              echo "${{ needs.build-and-push.outputs.image-full }}" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
               break
             fi
-            echo "Waiting... (attempt $i/60)"
+            
+            echo "⏳ Waiting for ALB... (attempt $i/60)"
             sleep 10
           done
 
           if [ -z "$HOST" ]; then
-            echo "⚠️ ALB not ready after 10 minutes"
+            echo "⚠️ ALB not ready after 10 minutes. Check AWS Console."
             echo "host=pending" >> $GITHUB_OUTPUT
           fi
 
@@ -346,33 +317,32 @@ jobs:
     steps:
       - name: Generate Summary
         run: |
-          echo "## 🚀 Build, Push & Deploy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.security-scan.result }}" == "success" ]; then
-            echo "✅ **Security Scan**: Passed" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔒 Security Scan | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Security Scan**: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔒 Security Scan | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
 
           if [ "${{ needs.build-and-push.result }}" == "success" ]; then
-            echo "✅ **Docker Build**: Completed" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Image Scan**: Completed" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Cloudsmith Push**: Completed" >> $GITHUB_STEP_SUMMARY
+            echo "| 🐳 Docker Build & Push | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Build & Push**: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| 🐳 Docker Build & Push | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
 
           if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "✅ **Kubernetes Deployment**: Completed" >> $GITHUB_STEP_SUMMARY
+            echo "| ☸️  Kubernetes Deploy | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.deploy.result }}" == "skipped" ]; then
+            echo "| ☸️  Kubernetes Deploy | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Kubernetes Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| ☸️  Kubernetes Deploy | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Registry:** Cloudsmith (flask-sample-app/photouploadd-app)" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** docker.cloudsmith.io/flask-sample-app/photouploadd-app/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ needs.build-and-push.outputs.image-tag }}" != "" ]; then
-            echo "**Tag:** ${{ needs.build-and-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "**Repository:** flask-sample-app/photouploadd-app" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

@@ -16,14 +16,14 @@ terraform {
     }
   }
 
-  # Optional: Configure S3 backend for state storage
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "eks/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-state-lock"
-  # }
+  # S3 backend for state storage
+  backend "s3" {
+    bucket         = "terraform-state-816069153839"
+    key            = "eks/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-state-lock"
+  }
 }
 
 provider "aws" {
