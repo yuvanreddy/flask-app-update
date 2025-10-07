@@ -19,7 +19,7 @@ app.config['DEBUG'] = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 def home():
     logger.info("Home endpoint accessed")
     return jsonify({
-        "message": "My Name is Arepally Rajavardhan Reddy and Deepthi Reddy, I have health",
+        "message": "My Name is Arepally Rajavardhan Reddy and Deepthi Reddy, I have two kids",
         "status": "running",
         "version": "1.0.0"
     })
@@ -28,7 +28,7 @@ def home():
 def health():
     """Health check endpoint for monitoring"""
     return jsonify({
-        "status": "Hello Team , I am Working in diligent as an SRE , Applicatin Lead Admin, Good Luck",
+        "status": "Hello Team , I am Working in diligent as an SRE , Applicatin Lead Admin, Shifting Hyderabad",
         "service": "flask-devops-demo"
     }), 200
 
