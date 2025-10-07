@@ -42,7 +42,7 @@ spec:
               key: secret-key
               optional: true
         - name: DATABASE_URL
-          value: "sqlite:///photos.db"
+          value: "sqlite:////app/data/photos.db"
         resources:
           requests:
             memory: "256Mi"
@@ -68,8 +68,7 @@ spec:
           failureThreshold: 3
         volumeMounts:
         - name: db-storage
-          mountPath: /app
-          subPath: app-data
+          mountPath: /app/data
         - name: uploads
           mountPath: /app/static/uploads
         - name: thumbnails

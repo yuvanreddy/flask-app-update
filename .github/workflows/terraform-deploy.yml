@@ -196,11 +196,24 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform apply -auto-approve tfplan.binary
 
+      - name: Wait for EKS cluster to be ready
+        run: |
+          echo "Waiting for EKS cluster to be fully ready..."
+          sleep 60
+          aws eks wait cluster-active --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Verify EBS CSI Driver
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          echo "Checking EBS CSI Driver pods..."
+          kubectl get pods -n kube-system -l app=ebs-csi-controller
+          echo "Checking storage classes..."
+          kubectl get storageclass
+
       - name: Get EKS Cluster Info
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           echo "### EKS Cluster Updated" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           CLUSTER_ENDPOINT=$(terraform output -raw cluster_endpoint)
@@ -259,6 +272,27 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform init
 
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} || true
+
+      - name: Remove Helm releases (if accessible)
+        run: |
+          echo "Attempting to remove Helm releases..."
+          helm uninstall aws-load-balancer-controller -n kube-system || echo "Could not uninstall via Helm, will remove from state"
+        continue-on-error: true
+
+      - name: Remove Helm release from Terraform state
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform state rm helm_release.aws_load_balancer_controller || echo "Helm release not in state"
+        continue-on-error: true
+
       - name: Terraform Destroy
         working-directory: ${{ env.WORKING_DIR }}
         run: |
@@ -269,7 +303,6 @@ jobs:
       - name: Post Destruction Summary
         run: |
           echo "### EKS Cluster Destroyed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "All infrastructure has been removed." >> $GITHUB_STEP_SUMMARY
           echo "**Cluster:** ${{ env.CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
