@@ -7,12 +7,9 @@ metadata:
     app: flask-app
     version: v1
 spec:
-  replicas: 2
+  replicas: 1  # SQLite doesn't support multiple writers
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate  # Required for ReadWriteOnce volumes
   selector:
     matchLabels:
       app: flask-app
@@ -70,14 +67,22 @@ spec:
           timeoutSeconds: 3
           failureThreshold: 3
         volumeMounts:
+        - name: db-storage
+          mountPath: /app
+          subPath: app-data
         - name: uploads
           mountPath: /app/static/uploads
         - name: thumbnails
           mountPath: /app/static/thumbnails
       volumes:
+      - name: db-storage
+        persistentVolumeClaim:
+          claimName: flask-app-db-pvc
       - name: uploads
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: flask-app-uploads-pvc
       - name: thumbnails
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: flask-app-thumbnails-pvc
       imagePullSecrets:
       - name: cloudsmith-regcred
