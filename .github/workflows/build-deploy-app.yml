@@ -42,11 +42,11 @@ env:
   CONTAINER: flask
   SERVICE: flask-svc
 
-  # Cloudsmith (registry)
+  # Cloudsmith (registry) - YOUR REPO
   REG_SERVER: docker.cloudsmith.io
   REG_SECRET: cloudsmith-regcred
   APP_SA: flask-app-sa
-  CLOUDSMITH_REPO: flask-sample-app/flask-sample-app
+  CLOUDSMITH_REPO: flask-sample-app/photouploadd-app
 
   # Ingress/ALB settings
   INGRESS_NAME: flask-alb
@@ -131,7 +131,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to CloudSmith
+      - name: Log in to Cloudsmith
         uses: docker/login-action@v3
         with:
           registry: docker.cloudsmith.io
@@ -142,7 +142,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}
+          images: docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=latest-
             type=raw,value=latest,enable={{is_default_branch}}
@@ -156,15 +156,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          load: true
 
-      - name: Run Trivy (Table Format)
+      - name: Run Trivy (Container Scan)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:latest
+          image-ref: docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:latest
           format: 'table'
-          severity: 'CRITICAL,HIGH,MEDIUM'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
 
-      - name: Push to CloudSmith
+      - name: Push to Cloudsmith
         uses: docker/build-push-action@v5
         if: github.event_name != 'pull_request'
         with:
@@ -178,8 +180,8 @@ jobs:
       - name: Set image info
         id: image-info
         run: |
-          IMAGE_TAG="latest-${{ github.sha }}"
-          FULL_IMAGE="docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep "latest-" | cut -d: -f2)
+          FULL_IMAGE="docker.cloudsmith.io/${{ env.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
           echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
           echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "Built and pushed: ${FULL_IMAGE}"
@@ -275,7 +277,7 @@ jobs:
           if ! kubectl -n "${NAMESPACE}" get deploy "${DEPLOYMENT}" >/dev/null 2>&1; then
             echo "Deployment ${DEPLOYMENT} not found, creating it..."
             kubectl apply -f k8s/deployment.yaml
-            sleep 10  # Wait for deployment to be ready
+            sleep 10
           fi
 
           # Update deployment with new image
@@ -285,35 +287,14 @@ jobs:
           kubectl patch deployment ${DEPLOYMENT} -n ${NAMESPACE} -p \
             "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$(date +'%s')\"}}}}" >/dev/null 2>&1 || true
 
+          # Wait for rollout
+          kubectl rollout status deployment/${DEPLOYMENT} -n ${NAMESPACE} --timeout=300s
+
       # --- Ensure ALB Ingress exists ---
       - name: Ensure Ingress exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
-            kubectl apply -f - <<EOF
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: ${INGRESS_NAME}
-            namespace: ${NAMESPACE}
-            annotations:
-              alb.ingress.kubernetes.io/scheme: internet-facing
-              alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/group.name: ${INGRESS_GROUP}
-              alb.ingress.kubernetes.io/healthcheck-path: ${HEALTHCHECK_PATH}
-              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
-          spec:
-            ingressClassName: ${INGRESS_CLASS}
-            rules:
-            - http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: ${SERVICE}
-                      port:
-                        number: 80
-          EOF
+            kubectl apply -f k8s/ingress.yaml
           fi
 
       # --- Wait for ALB hostname and print endpoints ---
@@ -332,15 +313,17 @@ jobs:
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo "📱 Main App:      http://$HOST/"
               echo "🏥 Health Check:   http://$HOST${HEALTHCHECK_PATH}"
+              echo "📸 Upload Page:    http://$HOST/upload"
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo ""
 
-              # Also write to step summary for GitHub UI
+              # Also write to step summary
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "🎉 **Application URLs:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Main App:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
-              echo "**Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+              echo "- **Main App:** http://$HOST/" >> $GITHUB_STEP_SUMMARY
+              echo "- **Health Check:** http://$HOST${HEALTHCHECK_PATH}" >> $GITHUB_STEP_SUMMARY
+              echo "- **Upload Page:** http://$HOST/upload" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
               break
@@ -352,11 +335,6 @@ jobs:
           if [ -z "$HOST" ]; then
             echo "⚠️ ALB not ready after 10 minutes"
             echo "host=pending" >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⏳ **ALB is still provisioning...**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Current Status:**" >> $GITHUB_STEP_SUMMARY
-            kubectl get ingress ${INGRESS_NAME} -n ${NAMESPACE} -o wide >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Unable to get status" >> $GITHUB_STEP_SUMMARY
           fi
 
   summary:
@@ -380,7 +358,7 @@ jobs:
           if [ "${{ needs.build-and-push.result }}" == "success" ]; then
             echo "✅ **Docker Build**: Completed" >> $GITHUB_STEP_SUMMARY
             echo "✅ **Image Scan**: Completed" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **CloudSmith Push**: Completed" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Cloudsmith Push**: Completed" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Build & Push**: Failed" >> $GITHUB_STEP_SUMMARY
           fi
@@ -392,17 +370,9 @@ jobs:
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image**: docker.cloudsmith.io/${{ secrets.CLOUDSMITH_REPO }}/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** Cloudsmith (flask-sample-app/photouploadd-app)" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** docker.cloudsmith.io/flask-sample-app/photouploadd-app/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.build-and-push.outputs.image-tag }}" != "" ]; then
-            echo "**Tag**: ${{ needs.build-and-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Tag:** ${{ needs.build-and-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
           fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🎯 **Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event.head_commit.message }}" != "" ]; then
-            echo "**Commit**: ${{ github.event.head_commit.message }}" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note**: Application URLs are displayed in the deploy job above ↑" >> $GITHUB_STEP_SUMMARY

@@ -16,33 +16,31 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket         = "flask-terraform-state-638950891807943903"
-    key            = "eks/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-state-lock"
-  }
+  # Optional: Configure S3 backend for state storage
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "eks/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   dynamodb_table = "terraform-state-lock"
+  # }
 }
 
 provider "aws" {
-  region = var.region
+  region = var.aws_region
 
   default_tags {
     tags = {
       Environment = var.environment
-      Project     = "flask-app"
+      Project     = "flask-photo-gallery"
       ManagedBy   = "Terraform"
     }
   }
 }
 
-# Data sources
+# Get current AWS account and region
 data "aws_caller_identity" "current" {}
-
-data "aws_availability_zones" "available" {
-  state = "available"
-}
+data "aws_region" "current" {}
 
 # VPC Module
 module "vpc" {
@@ -52,16 +50,16 @@ module "vpc" {
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
 
-  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  azs             = data.aws_availability_zones.available.names
   private_subnets = var.private_subnet_cidrs
   public_subnets  = var.public_subnet_cidrs
 
   enable_nat_gateway   = true
-  single_nat_gateway   = var.environment == "dev" ? true : false
+  single_nat_gateway   = var.single_nat_gateway
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  # Tags required for EKS
+  # Kubernetes tags for subnet discovery
   public_subnet_tags = {
     "kubernetes.io/role/elb"                    = "1"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
@@ -73,133 +71,175 @@ module "vpc" {
   }
 }
 
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
 # EKS Cluster
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+  version = "~> 20.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = var.cluster_version
+  cluster_version = var.kubernetes_version
+
+  # Cluster access
+  cluster_endpoint_public_access  = true
+  cluster_endpoint_private_access = true
+
+  # Encryption
+  cluster_encryption_config = {
+    resources        = ["secrets"]
+    provider_key_arn = aws_kms_key.eks.arn
+  }
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  # OIDC Provider for IRSA
-  enable_irsa = true
-
-  # Cluster endpoint configuration
-  cluster_endpoint_public_access = true
-
-  # EKS Managed Node Group
+  # EKS Managed Node Groups
   eks_managed_node_groups = {
-    main = {
-      # Don't set name - let it auto-generate to avoid length issues
+    general = {
+      name           = "${var.cluster_name}-general"
       instance_types = var.node_instance_types
-
+      
       min_size     = var.node_group_min_size
       max_size     = var.node_group_max_size
       desired_size = var.node_group_desired_size
 
-      # IAM role for nodes
-      iam_role_additional_policies = {
-        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      disk_size = 50
+
+      labels = {
+        role = "general"
+      }
+
+      tags = {
+        NodeGroup = "general"
       }
     }
   }
 
-  # aws-auth will be managed separately
-  manage_aws_auth_configmap = false
-}
-
-# IAM Roles Module
-module "iam_roles" {
-  source = "./modules/iam"
-
-  cluster_name           = var.cluster_name
-  aws_account_id         = data.aws_caller_identity.current.account_id
-  github_org             = var.github_org
-  github_repo            = var.github_repo
-  oidc_provider_arn      = module.eks.oidc_provider_arn
-  cluster_oidc_issuer_url = module.eks.cluster_oidc_issuer_url
-
-  depends_on = [module.eks]
-}
-
-# Kubernetes Provider Configuration
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args = [
-      "eks",
-      "get-token",
-      "--cluster-name",
-      module.eks.cluster_name
-    ]
-  }
-}
-
-# Helm Provider Configuration
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args = [
-        "eks",
-        "get-token",
-        "--cluster-name",
-        module.eks.cluster_name
-      ]
+  # Cluster add-ons
+  cluster_addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    aws-ebs-csi-driver = {
+      most_recent = true
     }
   }
-}
 
-# aws-auth ConfigMap
-module "aws_auth" {
-  source = "./modules/aws-auth"
+  # Enable IRSA (IAM Roles for Service Accounts)
+  enable_irsa = true
 
-  github_deployer_role_arn = module.iam_roles.github_deployer_role_arn
-  node_role_arn            = module.eks.eks_managed_node_groups["main"].iam_role_arn
-
-  depends_on = [module.eks]
-}
-
-# cert-manager (required for ALB controller webhooks)
-resource "helm_release" "cert_manager" {
-  name             = "cert-manager"
-  repository       = "https://charts.jetstack.io"
-  chart            = "cert-manager"
-  namespace        = "cert-manager"
-  create_namespace = true
-  version          = "v1.13.0"
-
-  set {
-    name  = "installCRDs"
-    value = "true"
+  tags = {
+    Environment = var.environment
   }
-
-  depends_on = [module.eks]
 }
 
-# AWS Load Balancer Controller
-module "alb_controller" {
-  source = "./modules/alb-controller"
+# KMS Key for EKS encryption
+resource "aws_kms_key" "eks" {
+  description             = "EKS Secret Encryption Key for ${var.cluster_name}"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
 
-  cluster_name              = var.cluster_name
-  alb_controller_role_arn   = module.iam_roles.alb_controller_role_arn
-  cluster_oidc_issuer_url   = module.eks.cluster_oidc_issuer_url
+  tags = {
+    Name = "${var.cluster_name}-eks-key"
+  }
+}
 
-  depends_on = [
-    module.eks,
-    module.aws_auth,
-    module.iam_roles,
-    helm_release.cert_manager
-  ]
+resource "aws_kms_alias" "eks" {
+  name          = "alias/${var.cluster_name}-eks"
+  target_key_id = aws_kms_key.eks.key_id
+}
+
+# IAM role for GitHub Actions OIDC
+resource "aws_iam_role" "github_actions" {
+  name = "${var.cluster_name}-github-deployer"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-github-deployer"
+  }
+}
+
+# Attach policies to GitHub Actions role
+resource "aws_iam_role_policy_attachment" "github_eks_access" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.github_eks_access.arn
+}
+
+resource "aws_iam_policy" "github_eks_access" {
+  name        = "${var.cluster_name}-github-eks-access"
+  description = "Policy for GitHub Actions to deploy to EKS"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "eks:DescribeCluster",
+          "eks:ListClusters"
+        ]
+        Resource = module.eks.cluster_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Configure kubectl access for GitHub Actions
+resource "aws_eks_access_entry" "github_actions" {
+  cluster_name      = module.eks.cluster_name
+  principal_arn     = aws_iam_role.github_actions.arn
+  kubernetes_groups = []
+  type              = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "github_actions_admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.github_actions.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
 }

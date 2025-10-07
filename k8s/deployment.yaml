@@ -5,8 +5,14 @@ metadata:
   namespace: default
   labels:
     app: flask-app
+    version: v1
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: flask-app
@@ -14,24 +20,46 @@ spec:
     metadata:
       labels:
         app: flask-app
+        version: v1
     spec:
       serviceAccountName: flask-app-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
       - name: flask
-        image: docker.cloudsmith.io/flask-sample-app/flask-sample-app/flask-devops-demo:latest
+        image: docker.cloudsmith.io/flask-sample-app/photouploadd-app/flask-devops-demo:latest
+        imagePullPolicy: Always
         ports:
-        - containerPort: 5000
-          name: http
+        - name: http
+          containerPort: 5000
+          protocol: TCP
         env:
-        - name: PORT
-          value: "5000"
+        - name: FLASK_ENV
+          value: "production"
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: flask-secrets
+              key: secret-key
+              optional: true
+        - name: DATABASE_URL
+          value: "sqlite:///photos.db"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         livenessProbe:
           httpGet:
             path: /health
             port: 5000
           initialDelaySeconds: 30
           periodSeconds: 10
-          timeoutSeconds: 5
+          timeoutSeconds: 3
           failureThreshold: 3
         readinessProbe:
           httpGet:
@@ -41,12 +69,15 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/static/uploads
+        - name: thumbnails
+          mountPath: /app/static/thumbnails
+      volumes:
+      - name: uploads
+        emptyDir: {}
+      - name: thumbnails
+        emptyDir: {}
       imagePullSecrets:
       - name: cloudsmith-regcred

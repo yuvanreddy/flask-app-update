@@ -209,6 +209,16 @@ def thumbnail(photo_id):
 with app.app_context():
     db.create_all()
 
+# Health check endpoint
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Kubernetes"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'photo-gallery',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):

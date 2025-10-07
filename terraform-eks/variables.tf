@@ -1,25 +1,25 @@
-variable "region" {
+variable "aws_region" {
   description = "AWS region"
   type        = string
   default     = "us-east-1"
+}
+
+variable "cluster_name" {
+  description = "Name of the EKS cluster"
+  type        = string
+  default     = "flask-eks"
+}
+
+variable "kubernetes_version" {
+  description = "Kubernetes version"
+  type        = string
+  default     = "1.28"
 }
 
 variable "environment" {
   description = "Environment name"
   type        = string
   default     = "production"
-}
-
-variable "cluster_name" {
-  description = "Name of the EKS cluster"
-  type        = string
-  default     = "flask-eks-master"
-}
-
-variable "cluster_version" {
-  description = "Kubernetes version"
-  type        = string
-  default     = "1.28"
 }
 
 variable "vpc_cidr" {
@@ -29,19 +29,25 @@ variable "vpc_cidr" {
 }
 
 variable "private_subnet_cidrs" {
-  description = "Private subnet CIDR blocks"
+  description = "CIDR blocks for private subnets"
   type        = list(string)
   default     = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
 }
 
 variable "public_subnet_cidrs" {
-  description = "Public subnet CIDR blocks"
+  description = "CIDR blocks for public subnets"
   type        = list(string)
   default     = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 }
 
+variable "single_nat_gateway" {
+  description = "Use a single NAT Gateway (cost savings for non-prod)"
+  type        = bool
+  default     = false
+}
+
 variable "node_instance_types" {
-  description = "EC2 instance types for EKS nodes"
+  description = "Instance types for EKS node groups"
   type        = list(string)
   default     = ["t3.medium"]
 }
@@ -64,14 +70,8 @@ variable "node_group_desired_size" {
   default     = 2
 }
 
-variable "github_org" {
-  description = "GitHub organization or username"
-  type        = string
-  default     = "yuvanreddy"
-}
-
 variable "github_repo" {
-  description = "GitHub repository name"
+  description = "GitHub repository in format 'owner/repo' for OIDC"
   type        = string
-  default     = "flask-app-update"
+  default     = "yuvanreddy/flask-app-update"
 }
