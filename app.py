@@ -1,6 +1,5 @@
-from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
-from flask_uploads import UploadSet, configure_uploads, IMAGES, patch_request_class
 from flask_migrate import Migrate
 from werkzeug.utils import secure_filename
 import os
@@ -18,21 +17,17 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///photos.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOADED_PHOTOS_DEST'] = os.path.join(os.getcwd(), 'static', 'uploads', 'photos')
+app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'static', 'uploads', 'photos')
+app.config['THUMBNAIL_FOLDER'] = os.path.join(os.getcwd(), 'static', 'thumbnails')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Ensure upload directories exist
-os.makedirs(app.config['UPLOADED_PHOTOS_DEST'], exist_ok=True)
-os.makedirs(os.path.join(os.getcwd(), 'static', 'uploads'), exist_ok=True)
-os.makedirs(os.path.join(os.getcwd(), 'static', 'thumbnails'), exist_ok=True)
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['THUMBNAIL_FOLDER'], exist_ok=True)
 
 # Initialize extensions
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
-
-# Configure file uploads
-photos = UploadSet('photos', IMAGES)
-configure_uploads(app, photos)
-patch_request_class(app, size=16 * 1024 * 1024)  # 16MB max file size
 
 # Database Model
 class Photo(db.Model):
@@ -64,6 +59,31 @@ class Photo(db.Model):
             'thumbnail_url': url_for('thumbnail', photo_id=self.id, _external=True)
         }
 
+# Helper functions
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def create_thumbnail(image_path, photo_id):
+    """Create a thumbnail for the uploaded image"""
+    try:
+        with Image.open(image_path) as img:
+            # Convert to RGB if necessary (for JPEG compatibility)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # Calculate thumbnail size (max 300x300)
+            img.thumbnail((300, 300))
+
+            # Save thumbnail
+            thumbnail_path = os.path.join(app.config['THUMBNAIL_FOLDER'], f"{photo_id}_thumb.jpg")
+            img.save(thumbnail_path, 'JPEG', quality=85)
+
+    except Exception as e:
+        print(f"Error creating thumbnail: {e}")
+        # Continue without thumbnail if creation fails
+
 # Routes
 @app.route('/')
 def index():
@@ -91,20 +111,21 @@ def upload():
                 # Generate unique filename
                 filename = secure_filename(file.filename)
                 unique_filename = f"{uuid.uuid4()}_{filename}"
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
 
                 # Save the file
-                uploaded_file = photos.save(file, name=unique_filename)
+                file.save(file_path)
 
                 # Get file info
-                file_path = photos.path(uploaded_file)
                 file_size = os.path.getsize(file_path)
 
                 # Create thumbnail
-                create_thumbnail(file_path, uploaded_file)
+                photo_id = unique_filename.split('_')[0]  # Extract UUID
+                create_thumbnail(file_path, photo_id)
 
                 # Save to database
                 photo = Photo(
-                    filename=uploaded_file,
+                    filename=unique_filename,
                     original_filename=filename,
                     file_size=file_size,
                     mime_type=file.content_type,
@@ -147,8 +168,8 @@ def delete_photo(photo_id):
 
     try:
         # Delete files
-        file_path = photos.path(photo.filename)
-        thumbnail_path = os.path.join(os.getcwd(), 'static', 'thumbnails', f"{photo.id}_thumb.jpg")
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], photo.filename)
+        thumbnail_path = os.path.join(app.config['THUMBNAIL_FOLDER'], f"{photo.id}_thumb.jpg")
 
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -169,50 +190,23 @@ def delete_photo(photo_id):
 @app.route('/uploads/photos/<filename>')
 def uploaded_file(filename):
     """Serve uploaded files"""
-    return photos.url(filename)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/thumbnail/<photo_id>')
 def thumbnail(photo_id):
     """Serve photo thumbnails"""
     photo = Photo.query.get_or_404(photo_id)
-    thumbnail_path = os.path.join(os.getcwd(), 'static', 'thumbnails', f"{photo.id}_thumb.jpg")
+    thumbnail_filename = f"{photo.id}_thumb.jpg"
+    thumbnail_path = os.path.join(app.config['THUMBNAIL_FOLDER'], thumbnail_filename)
 
     if os.path.exists(thumbnail_path):
-        return app.send_static_file(f'thumbnails/{photo.id}_thumb.jpg')
+        return send_from_directory(app.config['THUMBNAIL_FOLDER'], thumbnail_filename)
     else:
-        # Return placeholder or redirect to original
-        return uploaded_file(photo.filename)
-
-# Helper functions
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def create_thumbnail(image_path, filename):
-    """Create a thumbnail for the uploaded image"""
-    try:
-        with Image.open(image_path) as img:
-            # Convert to RGB if necessary (for JPEG compatibility)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-
-            # Calculate thumbnail size (max 300x300)
-            img.thumbnail((300, 300))
-
-            # Save thumbnail
-            photo_id = filename.split('_')[0]  # Extract UUID from filename
-            thumbnail_path = os.path.join(os.getcwd(), 'static', 'thumbnails', f"{photo_id}_thumb.jpg")
-            img.save(thumbnail_path, 'JPEG', quality=85)
-
-    except Exception as e:
-        print(f"Error creating thumbnail: {e}")
-        # Continue without thumbnail if creation fails
+        # Return original if thumbnail doesn't exist
+        return send_from_directory(app.config['UPLOAD_FOLDER'], photo.filename)
 
 # Create database tables
-@app.before_first_request
-def create_tables():
-    """Create database tables if they don't exist"""
+with app.app_context():
     db.create_all()
 
 # Error handlers
