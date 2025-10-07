@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Upload Gallery</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .photo-card {
+            transition: transform 0.2s;
+            margin-bottom: 20px;
+        }
+        .photo-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .thumbnail {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        .upload-btn {
+            background: linear-gradient(45deg, #007bff, #6610f2);
+            border: none;
+        }
+        .upload-btn:hover {
+            background: linear-gradient(45deg, #0056b3, #520dc2);
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-camera-retro"></i> Photo Gallery
+            </a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/upload">
+                    <i class="fas fa-plus"></i> Upload Photo
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row">
+            <div class="col-12">
+                <h2 class="mb-4">
+                    <i class="fas fa-images"></i> Photo Gallery
+                    {% if photos %}
+                        <small class="text-muted">({{ photos|length }} photos)</small>
+                    {% endif %}
+                </h2>
+            </div>
+        </div>
+
+        {% if not photos %}
+            <div class="row">
+                <div class="col-12">
+                    <div class="text-center py-5">
+                        <i class="fas fa-camera fa-4x text-muted mb-3"></i>
+                        <h4 class="text-muted">No photos uploaded yet</h4>
+                        <p class="text-muted">Upload your first photo to get started!</p>
+                        <a href="/upload" class="btn btn-primary btn-lg">
+                            <i class="fas fa-plus"></i> Upload Photo
+                        </a>
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            <div class="row">
+                {% for photo in photos %}
+                    <div class="col-md-4 col-lg-3">
+                        <div class="card photo-card">
+                            <a href="/photo/{{ photo.id }}">
+                                {% if photo.filename %}
+                                    <img src="/thumbnail/{{ photo.id }}" class="card-img-top thumbnail" alt="{{ photo.original_filename }}">
+                                {% else %}
+                                    <div class="bg-light d-flex align-items-center justify-content-center thumbnail">
+                                        <i class="fas fa-image fa-2x text-muted"></i>
+                                    </div>
+                                {% endif %}
+                            </a>
+                            <div class="card-body">
+                                <h6 class="card-title">{{ photo.original_filename }}</h6>
+                                {% if photo.description %}
+                                    <p class="card-text small text-muted">{{ photo.description[:50] }}{% if photo.description|length > 50 %}...{% endif %}</p>
+                                {% endif %}
+                                <small class="text-muted">
+                                    <i class="fas fa-calendar"></i> {{ photo.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                    <br>
+                                    <i class="fas fa-weight-hanging"></i> {{ (photo.file_size / 1024) | round(1) }} KB
+                                </small>
+                                <div class="mt-2">
+                                    <a href="/photo/{{ photo.id }}" class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-eye"></i> View
+                                    </a>
+                                    <form method="POST" action="/photo/{{ photo.id }}/delete" class="d-inline"
+                                          onsubmit="return confirm('Are you sure you want to delete this photo?')">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="fas fa-trash"></i> Delete
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+
+    <footer class="bg-dark text-light mt-5 py-4">
+        <div class="container text-center">
+            <p>&copy; 2024 Photo Gallery App. Built with Flask and Bootstrap.</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
