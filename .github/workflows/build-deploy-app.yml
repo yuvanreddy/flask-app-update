@@ -234,7 +234,7 @@ jobs:
       - name: Ensure Service exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get svc "${SERVICE}" >/dev/null 2>&1; then
-            kubectl apply -f k8s/service.yaml
+            kubectl apply -f k8s/service.yml
           fi
 
       - name: Deploy application
@@ -266,7 +266,7 @@ jobs:
       - name: Ensure Ingress exists
         run: |
           if ! kubectl -n "${NAMESPACE}" get ingress "${INGRESS_NAME}" >/dev/null 2>&1; then
-            kubectl apply -f k8s/ingress.yaml
+            kubectl apply -f k8s/ingress.yml
           fi
 
       - name: Fetch ALB address and Display URLs
