@@ -264,7 +264,17 @@ jobs:
 
           # Wait for rollout
           echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/${DEPLOYMENT} -n ${NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/${DEPLOYMENT} -n ${NAMESPACE} --timeout=600s || {
+            echo "❌ Rollout failed or timed out. Checking pod status..."
+            kubectl get pods -n ${NAMESPACE} -l app=flask-app
+            echo ""
+            echo "📋 Pod describe:"
+            kubectl describe pods -n ${NAMESPACE} -l app=flask-app
+            echo ""
+            echo "📜 Pod logs:"
+            kubectl logs -n ${NAMESPACE} -l app=flask-app --tail=50 || true
+            exit 1
+          }
           
           echo "✅ Deployment successful!"
 
