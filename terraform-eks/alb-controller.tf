@@ -1,14 +1,10 @@
 # AWS Load Balancer Controller
 # This is required for ALB Ingress to work
 
-# Data source to get EKS cluster OIDC issuer
-data "aws_iam_openid_connect_provider" "eks" {
-  url = module.eks.cluster_oidc_issuer_url
-}
-
 # IAM role for AWS Load Balancer Controller
 resource "aws_iam_role" "aws_load_balancer_controller" {
   name = "${var.cluster_name}-aws-load-balancer-controller"
+  depends_on = [module.eks.oidc_provider_arn]
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -16,7 +12,7 @@ resource "aws_iam_role" "aws_load_balancer_controller" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.eks.arn
+          Federated = module.eks.oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
