@@ -1,0 +1,468 @@
+name: Deploy Monitoring Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - install
+          - upgrade
+          - uninstall
+          - status
+        default: 'install'
+      grafana_password:
+        description: 'Grafana admin password (leave empty to use default)'
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/deploy-monitoring.yml'
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: flask-eks
+  MONITORING_NAMESPACE: monitoring
+  HELM_CHART_VERSION: "55.0.0"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-monitoring:
+    name: Deploy Prometheus & Grafana
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.13.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl cluster-info
+
+      - name: Add Prometheus Helm repository
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Create monitoring namespace
+        if: github.event.inputs.action != 'uninstall'
+        run: |
+          kubectl create namespace ${{ env.MONITORING_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Prepare Helm values
+        if: github.event.inputs.action == 'install' || github.event.inputs.action == 'upgrade'
+        run: |
+          # Use custom password if provided, otherwise use default
+          if [ -n "${{ github.event.inputs.grafana_password }}" ]; then
+            GRAFANA_PASSWORD="${{ github.event.inputs.grafana_password }}"
+          else
+            GRAFANA_PASSWORD="ChangeMe123!SecurePassword"
+          fi
+          
+          # Update Grafana password in values file
+          sed -i "s/adminPassword: .*/adminPassword: \"$GRAFANA_PASSWORD\"/" monitoring/prometheus-values.yaml
+          
+          echo "Helm values prepared"
+
+      - name: Install Prometheus Stack
+        if: github.event.inputs.action == 'install' || (github.event_name == 'push' && github.event.inputs.action == '')
+        run: |
+          echo "📦 Installing Prometheus Stack..."
+          
+          helm install prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace ${{ env.MONITORING_NAMESPACE }} \
+            --values monitoring/prometheus-values.yaml \
+            --version ${{ env.HELM_CHART_VERSION }} \
+            --wait \
+            --timeout 15m
+          
+          echo "✅ Prometheus Stack installed successfully"
+
+      - name: Upgrade Prometheus Stack
+        if: github.event.inputs.action == 'upgrade'
+        run: |
+          echo "🔄 Upgrading Prometheus Stack..."
+          
+          helm upgrade prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace ${{ env.MONITORING_NAMESPACE }} \
+            --values monitoring/prometheus-values.yaml \
+            --version ${{ env.HELM_CHART_VERSION }} \
+            --wait \
+            --timeout 15m
+          
+          echo "✅ Prometheus Stack upgraded successfully"
+
+      - name: Apply custom alerts
+        if: github.event.inputs.action == 'install' || github.event.inputs.action == 'upgrade'
+        run: |
+          echo "🚨 Applying custom Flask app alerts..."
+          kubectl apply -f monitoring/flask-app-alerts.yaml
+          echo "✅ Custom alerts applied"
+
+      - name: Wait for pods to be ready
+        if: github.event.inputs.action == 'install' || github.event.inputs.action == 'upgrade'
+        run: |
+          echo "⏳ Waiting for all monitoring pods to be ready..."
+          kubectl wait --for=condition=ready pod \
+            --all \
+            --namespace=${{ env.MONITORING_NAMESPACE }} \
+            --timeout=600s
+          echo "✅ All pods are ready"
+
+      - name: Get monitoring status
+        if: github.event.inputs.action != 'uninstall'
+        id: monitoring_status
+        run: |
+          echo "📊 Getting monitoring stack status..."
+          
+          # Get Grafana LoadBalancer URL
+          GRAFANA_LB=$(kubectl get svc -n ${{ env.MONITORING_NAMESPACE }} prometheus-stack-grafana \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          
+          # Get Grafana admin password
+          GRAFANA_PASSWORD=$(kubectl get secret -n ${{ env.MONITORING_NAMESPACE }} prometheus-stack-grafana \
+            -o jsonpath="{.data.admin-password}" | base64 --decode)
+          
+          # Get pod status
+          POD_STATUS=$(kubectl get pods -n ${{ env.MONITORING_NAMESPACE }} --no-headers | wc -l)
+          READY_PODS=$(kubectl get pods -n ${{ env.MONITORING_NAMESPACE }} --field-selector=status.phase=Running --no-headers | wc -l)
+          
+          # Get Prometheus rules count
+          ALERT_RULES=$(kubectl get prometheusrules -n ${{ env.MONITORING_NAMESPACE }} --no-headers | wc -l)
+          
+          # Export for later steps
+          echo "grafana_url=$GRAFANA_LB" >> $GITHUB_OUTPUT
+          echo "grafana_password=$GRAFANA_PASSWORD" >> $GITHUB_OUTPUT
+          echo "total_pods=$POD_STATUS" >> $GITHUB_OUTPUT
+          echo "ready_pods=$READY_PODS" >> $GITHUB_OUTPUT
+          echo "alert_rules=$ALERT_RULES" >> $GITHUB_OUTPUT
+          
+          echo "✅ Status retrieved"
+
+      - name: Display access information
+        if: github.event.inputs.action != 'uninstall'
+        run: |
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║          MONITORING STACK DEPLOYMENT SUCCESSFUL! 🎉            ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "📊 MONITORING STACK STATUS:"
+          echo "├─ Total Pods: ${{ steps.monitoring_status.outputs.total_pods }}"
+          echo "├─ Ready Pods: ${{ steps.monitoring_status.outputs.ready_pods }}"
+          echo "├─ Alert Rules: ${{ steps.monitoring_status.outputs.alert_rules }}"
+          echo "└─ Namespace: ${{ env.MONITORING_NAMESPACE }}"
+          echo ""
+          echo "🌐 ACCESS INFORMATION:"
+          echo "┌────────────────────────────────────────────────────────────────┐"
+          echo "│ GRAFANA DASHBOARD                                              │"
+          echo "├────────────────────────────────────────────────────────────────┤"
+          
+          if [ "${{ steps.monitoring_status.outputs.grafana_url }}" != "pending" ]; then
+            echo "│ URL:      http://${{ steps.monitoring_status.outputs.grafana_url }}"
+          else
+            echo "│ URL:      LoadBalancer provisioning... (check in 2-3 minutes)"
+          fi
+          
+          echo "│ Username: admin"
+          echo "│ Password: ${{ steps.monitoring_status.outputs.grafana_password }}"
+          echo "└────────────────────────────────────────────────────────────────┘"
+          echo ""
+          echo "🔍 PORT FORWARD ACCESS (Alternative):"
+          echo "┌────────────────────────────────────────────────────────────────┐"
+          echo "│ Grafana:                                                       │"
+          echo "│   kubectl port-forward -n monitoring svc/prometheus-stack-grafana 3000:80"
+          echo "│   http://localhost:3000                                        │"
+          echo "│                                                                │"
+          echo "│ Prometheus:                                                    │"
+          echo "│   kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090"
+          echo "│   http://localhost:9090                                        │"
+          echo "│                                                                │"
+          echo "│ Alertmanager:                                                  │"
+          echo "│   kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-alertmanager 9093:9093"
+          echo "│   http://localhost:9093                                        │"
+          echo "└────────────────────────────────────────────────────────────────┘"
+          echo ""
+          echo "📚 NEXT STEPS:"
+          echo "1. Access Grafana using the URL above"
+          echo "2. Login with admin credentials"
+          echo "3. Import recommended dashboards (IDs: 7249, 1860, 6417)"
+          echo "4. Configure alert notifications (email/Slack)"
+          echo "5. Create custom Flask app dashboard"
+          echo ""
+          echo "📖 Documentation: See monitoring/MONITORING-INTEGRATION-GUIDE.md"
+          echo ""
+
+      - name: Create deployment summary
+        if: github.event.inputs.action != 'uninstall'
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🎉 Monitoring Stack Deployment Summary
+          
+          ## ✅ Deployment Status
+          
+          | Component | Status |
+          |-----------|--------|
+          | Prometheus | ✅ Deployed |
+          | Grafana | ✅ Deployed |
+          | Alertmanager | ✅ Deployed |
+          | Node Exporter | ✅ Deployed |
+          | Kube State Metrics | ✅ Deployed |
+          | Custom Alerts | ✅ Applied |
+          
+          ## 📊 Statistics
+          
+          - **Total Pods**: ${{ steps.monitoring_status.outputs.total_pods }}
+          - **Ready Pods**: ${{ steps.monitoring_status.outputs.ready_pods }}
+          - **Alert Rules**: ${{ steps.monitoring_status.outputs.alert_rules }}
+          - **Namespace**: `${{ env.MONITORING_NAMESPACE }}`
+          
+          ## 🌐 Access Information
+          
+          ### Grafana Dashboard
+          
+          ```
+          URL:      http://${{ steps.monitoring_status.outputs.grafana_url }}
+          Username: admin
+          Password: ${{ steps.monitoring_status.outputs.grafana_password }}
+          ```
+          
+          ### Port Forward Access
+          
+          **Grafana:**
+          ```bash
+          kubectl port-forward -n monitoring svc/prometheus-stack-grafana 3000:80
+          # Access: http://localhost:3000
+          ```
+          
+          **Prometheus:**
+          ```bash
+          kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090
+          # Access: http://localhost:9090
+          ```
+          
+          **Alertmanager:**
+          ```bash
+          kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-alertmanager 9093:9093
+          # Access: http://localhost:9093
+          ```
+          
+          ## 📚 Recommended Dashboards
+          
+          Import these dashboard IDs in Grafana:
+          - **7249** - Kubernetes Cluster Monitoring
+          - **1860** - Node Exporter Full
+          - **6417** - Kubernetes Pods Monitoring
+          - **8588** - Kubernetes Deployments
+          - **13646** - Kubernetes Persistent Volumes
+          
+          ## 🚨 Custom Alerts Configured
+          
+          - FlaskAppPodDown
+          - FlaskAppNoPodsRunning
+          - FlaskAppHighCPUUsage
+          - FlaskAppHighMemoryUsage
+          - FlaskAppPVCAlmostFull
+          - And 5 more...
+          
+          ## 📖 Documentation
+          
+          - [Monitoring Integration Guide](monitoring/MONITORING-INTEGRATION-GUIDE.md)
+          - [PromQL Queries](monitoring/FLASK-APP-PROMQL-QUERIES.md)
+          - [Dashboard Creation Guide](monitoring/GRAFANA-DASHBOARD-CREATION-GUIDE.md)
+          - [Alerts & Notifications](monitoring/ALERTS-AND-NOTIFICATIONS-GUIDE.md)
+          
+          ## 🎯 Next Steps
+          
+          1. ✅ Access Grafana dashboard
+          2. ✅ Import recommended dashboards
+          3. ✅ Configure alert notifications
+          4. ✅ Create custom Flask app dashboard
+          5. ✅ Test alerts with CPU stress
+          
+          ---
+          
+          **Deployment completed successfully!** 🚀
+          EOF
+
+      - name: Uninstall Prometheus Stack
+        if: github.event.inputs.action == 'uninstall'
+        run: |
+          echo "🗑️ Uninstalling Prometheus Stack..."
+          
+          helm uninstall prometheus-stack -n ${{ env.MONITORING_NAMESPACE }} || true
+          
+          echo "⏳ Waiting for resources to be deleted..."
+          sleep 30
+          
+          kubectl delete namespace ${{ env.MONITORING_NAMESPACE }} || true
+          
+          echo "✅ Monitoring stack uninstalled"
+
+      - name: Get pod logs on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed. Collecting logs..."
+          
+          echo "=== Pods Status ==="
+          kubectl get pods -n ${{ env.MONITORING_NAMESPACE }}
+          
+          echo "=== Grafana Pod Logs ==="
+          kubectl logs -n ${{ env.MONITORING_NAMESPACE }} -l app.kubernetes.io/name=grafana --tail=100 || true
+          
+          echo "=== Prometheus Pod Logs ==="
+          kubectl logs -n ${{ env.MONITORING_NAMESPACE }} -l app.kubernetes.io/name=prometheus --tail=100 || true
+          
+          echo "=== Events ==="
+          kubectl get events -n ${{ env.MONITORING_NAMESPACE }} --sort-by='.lastTimestamp' || true
+
+  verify-monitoring:
+    name: Verify Monitoring Stack
+    runs-on: ubuntu-latest
+    needs: deploy-monitoring
+    if: github.event.inputs.action != 'uninstall'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Verify Prometheus
+        run: |
+          echo "🔍 Verifying Prometheus..."
+          
+          # Check if Prometheus pod is running
+          kubectl get pods -n ${{ env.MONITORING_NAMESPACE }} -l app.kubernetes.io/name=prometheus
+          
+          # Port forward and test
+          kubectl port-forward -n ${{ env.MONITORING_NAMESPACE }} svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 5
+          
+          # Test Prometheus API
+          RESPONSE=$(curl -s http://localhost:9090/api/v1/status/config | jq -r '.status')
+          
+          if [ "$RESPONSE" == "success" ]; then
+            echo "✅ Prometheus is healthy"
+          else
+            echo "❌ Prometheus health check failed"
+            exit 1
+          fi
+          
+          kill $PF_PID
+
+      - name: Verify Grafana
+        run: |
+          echo "🔍 Verifying Grafana..."
+          
+          # Check if Grafana pod is running
+          kubectl get pods -n ${{ env.MONITORING_NAMESPACE }} -l app.kubernetes.io/name=grafana
+          
+          # Port forward and test
+          kubectl port-forward -n ${{ env.MONITORING_NAMESPACE }} svc/prometheus-stack-grafana 3000:80 &
+          PF_PID=$!
+          sleep 5
+          
+          # Test Grafana API
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health)
+          
+          if [ "$HTTP_CODE" == "200" ]; then
+            echo "✅ Grafana is healthy"
+          else
+            echo "❌ Grafana health check failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          
+          kill $PF_PID
+
+      - name: Verify Alertmanager
+        run: |
+          echo "🔍 Verifying Alertmanager..."
+          
+          # Check if Alertmanager pod is running
+          kubectl get pods -n ${{ env.MONITORING_NAMESPACE }} -l app.kubernetes.io/name=alertmanager
+          
+          # Port forward and test
+          kubectl port-forward -n ${{ env.MONITORING_NAMESPACE }} svc/prometheus-stack-kube-prom-alertmanager 9093:9093 &
+          PF_PID=$!
+          sleep 5
+          
+          # Test Alertmanager API
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9093/api/v2/status)
+          
+          if [ "$HTTP_CODE" == "200" ]; then
+            echo "✅ Alertmanager is healthy"
+          else
+            echo "❌ Alertmanager health check failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          
+          kill $PF_PID
+
+      - name: Verify custom alerts
+        run: |
+          echo "🔍 Verifying custom Flask app alerts..."
+          
+          ALERT_COUNT=$(kubectl get prometheusrules -n ${{ env.MONITORING_NAMESPACE }} flask-app-alerts -o json | jq '.spec.groups | length')
+          
+          if [ "$ALERT_COUNT" -gt 0 ]; then
+            echo "✅ Custom alerts are configured ($ALERT_COUNT alert groups)"
+          else
+            echo "❌ Custom alerts not found"
+            exit 1
+          fi
+
+      - name: Create verification summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # ✅ Monitoring Stack Verification
+          
+          ## Health Checks
+          
+          | Component | Status |
+          |-----------|--------|
+          | Prometheus | ✅ Healthy |
+          | Grafana | ✅ Healthy |
+          | Alertmanager | ✅ Healthy |
+          | Custom Alerts | ✅ Configured |
+          
+          All monitoring components are operational! 🎉
+          EOF

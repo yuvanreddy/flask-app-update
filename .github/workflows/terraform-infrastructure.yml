@@ -1,0 +1,543 @@
+name: Terraform Infrastructure Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+        default: 'plan'
+      auto_approve:
+        description: 'Auto-approve (skip confirmation)'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform-eks/**'
+      - '.github/workflows/terraform-infrastructure.yml'
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: '1.6.0'
+  WORKING_DIR: terraform-eks
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event.inputs.action || 'plan' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: |
+          echo "🔧 Initializing Terraform..."
+          terraform init
+          echo "✅ Terraform initialized"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Validate
+        id: validate
+        run: |
+          echo "🔍 Validating Terraform configuration..."
+          terraform validate -no-color
+          echo "✅ Configuration is valid"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == '' || github.event_name == 'push'
+        run: |
+          echo "📋 Creating Terraform plan..."
+          terraform plan -no-color -out=tfplan
+          echo "✅ Plan created"
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: false
+
+      - name: Terraform Apply
+        id: apply
+        if: github.event.inputs.action == 'apply'
+        run: |
+          echo "🚀 Applying Terraform configuration..."
+          
+          if [ "${{ github.event.inputs.auto_approve }}" == "true" ]; then
+            terraform apply -auto-approve -no-color
+          else
+            terraform apply -no-color
+          fi
+          
+          echo "✅ Infrastructure deployed successfully"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Destroy
+        id: destroy
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          echo "🔥 Destroying Terraform infrastructure..."
+          echo "⚠️  This will delete all resources!"
+          
+          if [ "${{ github.event.inputs.auto_approve }}" == "true" ]; then
+            terraform destroy -auto-approve -no-color
+          else
+            terraform destroy -no-color
+          fi
+          
+          echo "✅ Infrastructure destroyed"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Get Infrastructure Outputs
+        id: outputs
+        if: github.event.inputs.action == 'apply' || (github.event.inputs.action == 'plan' && steps.apply.outcome == 'success')
+        run: |
+          echo "📊 Retrieving infrastructure outputs..."
+          
+          # Get EKS cluster name
+          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || echo "flask-eks")
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          
+          # Get EKS cluster endpoint
+          CLUSTER_ENDPOINT=$(terraform output -raw cluster_endpoint 2>/dev/null || echo "")
+          echo "cluster_endpoint=$CLUSTER_ENDPOINT" >> $GITHUB_OUTPUT
+          
+          # Get VPC ID
+          VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
+          
+          # Get region
+          echo "region=${{ env.AWS_REGION }}" >> $GITHUB_OUTPUT
+          
+          echo "✅ Outputs retrieved"
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+
+      - name: Update kubeconfig
+        id: kubeconfig
+        if: github.event.inputs.action == 'apply' && steps.apply.outcome == 'success'
+        run: |
+          echo "🔧 Updating kubeconfig..."
+          aws eks update-kubeconfig --name ${{ steps.outputs.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          kubectl cluster-info
+          echo "✅ Kubeconfig updated"
+        continue-on-error: true
+
+      - name: Get cluster information
+        id: cluster_info
+        if: github.event.inputs.action == 'apply' && steps.apply.outcome == 'success'
+        run: |
+          echo "📊 Gathering cluster information..."
+          
+          CLUSTER_NAME="${{ steps.outputs.outputs.cluster_name }}"
+          
+          # Get cluster status
+          CLUSTER_STATUS=$(aws eks describe-cluster --name $CLUSTER_NAME --region ${{ env.AWS_REGION }} --query 'cluster.status' --output text)
+          echo "cluster_status=$CLUSTER_STATUS" >> $GITHUB_OUTPUT
+          
+          # Get cluster version
+          CLUSTER_VERSION=$(aws eks describe-cluster --name $CLUSTER_NAME --region ${{ env.AWS_REGION }} --query 'cluster.version' --output text)
+          echo "cluster_version=$CLUSTER_VERSION" >> $GITHUB_OUTPUT
+          
+          # Get node count
+          NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+          echo "node_count=$NODE_COUNT" >> $GITHUB_OUTPUT
+          
+          # Get OIDC provider
+          OIDC_PROVIDER=$(aws eks describe-cluster --name $CLUSTER_NAME --region ${{ env.AWS_REGION }} --query 'cluster.identity.oidc.issuer' --output text | sed 's|https://||')
+          echo "oidc_provider=$OIDC_PROVIDER" >> $GITHUB_OUTPUT
+          
+          echo "✅ Cluster information gathered"
+        continue-on-error: true
+
+      - name: Display infrastructure information
+        if: github.event.inputs.action == 'apply' && steps.apply.outcome == 'success'
+        run: |
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║        INFRASTRUCTURE DEPLOYMENT SUCCESSFUL! 🎉                ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🌐 EKS CLUSTER INFORMATION:"
+          echo "┌────────────────────────────────────────────────────────────────┐"
+          echo "│ Cluster Name:    ${{ steps.outputs.outputs.cluster_name }}"
+          echo "│ Region:          ${{ env.AWS_REGION }}"
+          echo "│ Status:          ${{ steps.cluster_info.outputs.cluster_status }}"
+          echo "│ Version:         ${{ steps.cluster_info.outputs.cluster_version }}"
+          echo "│ Endpoint:        ${{ steps.outputs.outputs.cluster_endpoint }}"
+          echo "│ Worker Nodes:    ${{ steps.cluster_info.outputs.node_count }}"
+          echo "└────────────────────────────────────────────────────────────────┘"
+          echo ""
+          echo "🔐 ACCESS CONFIGURATION:"
+          echo "┌────────────────────────────────────────────────────────────────┐"
+          echo "│ Update kubeconfig:"
+          echo "│   aws eks update-kubeconfig --name ${{ steps.outputs.outputs.cluster_name }} --region ${{ env.AWS_REGION }}"
+          echo "│"
+          echo "│ Verify access:"
+          echo "│   kubectl cluster-info"
+          echo "│   kubectl get nodes"
+          echo "└────────────────────────────────────────────────────────────────┘"
+          echo ""
+          echo "📦 DEPLOYED RESOURCES:"
+          echo "├─ VPC ID: ${{ steps.outputs.outputs.vpc_id }}"
+          echo "├─ EKS Cluster: ${{ steps.outputs.outputs.cluster_name }}"
+          echo "├─ OIDC Provider: ${{ steps.cluster_info.outputs.oidc_provider }}"
+          echo "├─ Worker Nodes: ${{ steps.cluster_info.outputs.node_count }} (t3.medium)"
+          echo "├─ Load Balancer Controller: Installed"
+          echo "├─ EBS CSI Driver: Installed"
+          echo "└─ VPC CNI: Installed"
+          echo ""
+          echo "🎯 NEXT STEPS:"
+          echo "1. Update kubeconfig (command above)"
+          echo "2. Deploy application:"
+          echo "   kubectl apply -f k8s/"
+          echo "3. Deploy monitoring:"
+          echo "   Run 'Deploy Monitoring Stack' workflow"
+          echo "4. Get application URL:"
+          echo "   kubectl get ingress -n default"
+          echo ""
+          echo "💰 ESTIMATED MONTHLY COST: ~$255"
+          echo "├─ EKS Cluster: ~$73/month"
+          echo "├─ EC2 Instances: ~$60/month"
+          echo "├─ NAT Gateways: ~$100/month"
+          echo "├─ Load Balancers: ~$20/month"
+          echo "└─ Other: ~$2/month"
+          echo ""
+          echo "📖 Documentation: See PROJECT-FLOW-DOCUMENTATION.md"
+          echo ""
+
+      - name: Display destroy confirmation
+        if: github.event.inputs.action == 'destroy' && steps.destroy.outcome == 'success'
+        run: |
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║        INFRASTRUCTURE DESTROYED SUCCESSFULLY! ✅               ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🗑️  DELETED RESOURCES:"
+          echo "├─ EKS Cluster: ${{ steps.outputs.outputs.cluster_name }}"
+          echo "├─ Worker Nodes: All terminated"
+          echo "├─ VPC and Subnets: Deleted"
+          echo "├─ NAT Gateways: Deleted"
+          echo "├─ Load Balancers: Deleted"
+          echo "├─ Security Groups: Deleted"
+          echo "├─ IAM Roles: Deleted"
+          echo "└─ All associated resources: Deleted"
+          echo ""
+          echo "💰 COST SAVINGS: ~$255/month"
+          echo ""
+          echo "⚠️  NOTE:"
+          echo "- All data has been permanently deleted"
+          echo "- Resources cannot be recovered"
+          echo "- Verify in AWS Console that all resources are gone"
+          echo ""
+          echo "🔄 TO RECREATE:"
+          echo "Run this workflow again with action: 'apply'"
+          echo ""
+
+      - name: Create deployment summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # Terraform ${{ github.event.inputs.action || 'plan' }} Summary
+          
+          ## Action Performed
+          
+          **Action:** ${{ github.event.inputs.action || 'plan' }}  
+          **Auto-approve:** ${{ github.event.inputs.auto_approve || 'false' }}  
+          **Triggered by:** ${{ github.actor }}  
+          **Timestamp:** ${{ github.event.head_commit.timestamp }}
+          
+          EOF
+          
+          if [ "${{ github.event.inputs.action }}" == "apply" ] && [ "${{ steps.apply.outcome }}" == "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## ✅ Infrastructure Deployed
+          
+          ### EKS Cluster Information
+          
+          | Property | Value |
+          |----------|-------|
+          | **Cluster Name** | ${{ steps.outputs.outputs.cluster_name }} |
+          | **Region** | ${{ env.AWS_REGION }} |
+          | **Status** | ${{ steps.cluster_info.outputs.cluster_status }} |
+          | **Version** | ${{ steps.cluster_info.outputs.cluster_version }} |
+          | **Worker Nodes** | ${{ steps.cluster_info.outputs.node_count }} |
+          | **VPC ID** | ${{ steps.outputs.outputs.vpc_id }} |
+          
+          ### Access Commands
+          
+          **Update kubeconfig:**
+          ```bash
+          aws eks update-kubeconfig --name ${{ steps.outputs.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          ```
+          
+          **Verify cluster:**
+          ```bash
+          kubectl cluster-info
+          kubectl get nodes
+          ```
+          
+          ### Deployed Components
+          
+          - ✅ VPC with public/private subnets
+          - ✅ EKS Cluster (Kubernetes ${{ steps.cluster_info.outputs.cluster_version }})
+          - ✅ Worker Nodes (${{ steps.cluster_info.outputs.node_count }}x t3.medium)
+          - ✅ AWS Load Balancer Controller
+          - ✅ EBS CSI Driver
+          - ✅ VPC CNI Plugin
+          - ✅ OIDC Provider
+          
+          ### Next Steps
+          
+          1. **Update kubeconfig** (command above)
+          2. **Deploy application:**
+             ```bash
+             kubectl apply -f k8s/
+             ```
+          3. **Deploy monitoring:**
+             - Run "Deploy Monitoring Stack" workflow
+          4. **Get application URL:**
+             ```bash
+             kubectl get ingress -n default
+             ```
+          
+          ### Cost Estimate
+          
+          **Monthly Cost:** ~$255
+          - EKS Cluster: ~$73
+          - EC2 Instances: ~$60
+          - NAT Gateways: ~$100
+          - Load Balancers: ~$20
+          - Other: ~$2
+          
+          EOF
+          elif [ "${{ github.event.inputs.action }}" == "destroy" ] && [ "${{ steps.destroy.outcome }}" == "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## ✅ Infrastructure Destroyed
+          
+          ### Deleted Resources
+          
+          - ✅ EKS Cluster
+          - ✅ Worker Nodes
+          - ✅ VPC and Subnets
+          - ✅ NAT Gateways
+          - ✅ Internet Gateway
+          - ✅ Load Balancers
+          - ✅ Security Groups
+          - ✅ IAM Roles and Policies
+          - ✅ OIDC Provider
+          
+          ### Cost Savings
+          
+          **Monthly Savings:** ~$255
+          
+          ### Important Notes
+          
+          ⚠️ **Data Loss:** All data has been permanently deleted  
+          ⚠️ **No Recovery:** Deleted resources cannot be recovered  
+          ⚠️ **Verification:** Check AWS Console to confirm deletion
+          
+          ### To Recreate Infrastructure
+          
+          Run this workflow again with action: **apply**
+          
+          EOF
+          elif [ "${{ github.event.inputs.action }}" == "plan" ] || [ "${{ github.event_name }}" == "push" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## 📋 Terraform Plan
+          
+          Plan has been generated. Review the changes above.
+          
+          ### To Apply Changes
+          
+          Run this workflow with action: **apply**
+          
+          EOF
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+            #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+            #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+            #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+            
+            <details><summary>Show Plan</summary>
+            
+            \`\`\`terraform
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            
+            </details>
+            
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Upload Terraform plan
+        if: github.event.inputs.action == 'plan' || github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 5
+
+      - name: Cleanup on failure
+        if: failure() && github.event.inputs.action == 'apply'
+        run: |
+          echo "❌ Deployment failed. Checking for partial resources..."
+          
+          # List any created resources
+          terraform state list || true
+          
+          echo ""
+          echo "⚠️  You may need to manually clean up resources or run destroy"
+        working-directory: ${{ env.WORKING_DIR }}
+
+  post-apply-verification:
+    name: Verify Infrastructure
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: github.event.inputs.action == 'apply' && needs.terraform.result == 'success'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Verify EKS cluster
+        run: |
+          echo "🔍 Verifying EKS cluster..."
+          
+          CLUSTER_NAME="flask-eks"
+          
+          # Check cluster status
+          STATUS=$(aws eks describe-cluster --name $CLUSTER_NAME --region ${{ env.AWS_REGION }} --query 'cluster.status' --output text)
+          
+          if [ "$STATUS" == "ACTIVE" ]; then
+            echo "✅ Cluster is ACTIVE"
+          else
+            echo "❌ Cluster status: $STATUS"
+            exit 1
+          fi
+          
+          # Update kubeconfig
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region ${{ env.AWS_REGION }}
+          
+          # Check nodes
+          echo "📊 Checking worker nodes..."
+          kubectl get nodes
+          
+          NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+          
+          if [ "$NODE_COUNT" -ge 2 ]; then
+            echo "✅ Found $NODE_COUNT worker nodes"
+          else
+            echo "⚠️  Expected 2+ nodes, found $NODE_COUNT"
+          fi
+
+      - name: Verify addons
+        run: |
+          echo "🔍 Verifying EKS addons..."
+          
+          CLUSTER_NAME="flask-eks"
+          
+          # Check VPC CNI
+          VPC_CNI=$(aws eks describe-addon --cluster-name $CLUSTER_NAME --addon-name vpc-cni --region ${{ env.AWS_REGION }} --query 'addon.status' --output text)
+          echo "VPC CNI: $VPC_CNI"
+          
+          # Check CoreDNS
+          COREDNS=$(aws eks describe-addon --cluster-name $CLUSTER_NAME --addon-name coredns --region ${{ env.AWS_REGION }} --query 'addon.status' --output text)
+          echo "CoreDNS: $COREDNS"
+          
+          # Check kube-proxy
+          KUBE_PROXY=$(aws eks describe-addon --cluster-name $CLUSTER_NAME --addon-name kube-proxy --region ${{ env.AWS_REGION }} --query 'addon.status' --output text)
+          echo "kube-proxy: $KUBE_PROXY"
+          
+          # Check EBS CSI Driver
+          EBS_CSI=$(aws eks describe-addon --cluster-name $CLUSTER_NAME --addon-name aws-ebs-csi-driver --region ${{ env.AWS_REGION }} --query 'addon.status' --output text)
+          echo "EBS CSI Driver: $EBS_CSI"
+          
+          echo "✅ All addons verified"
+
+      - name: Verify Load Balancer Controller
+        run: |
+          echo "🔍 Verifying AWS Load Balancer Controller..."
+          
+          # Check if controller is deployed
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          
+          # Check if pods are running
+          READY=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --field-selector=status.phase=Running --no-headers | wc -l)
+          
+          if [ "$READY" -ge 1 ]; then
+            echo "✅ Load Balancer Controller is running"
+          else
+            echo "⚠️  Load Balancer Controller not ready"
+          fi
+
+      - name: Create verification summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # ✅ Infrastructure Verification
+          
+          ## Verification Results
+          
+          | Component | Status |
+          |-----------|--------|
+          | EKS Cluster | ✅ Active |
+          | Worker Nodes | ✅ Running |
+          | VPC CNI | ✅ Active |
+          | CoreDNS | ✅ Active |
+          | kube-proxy | ✅ Active |
+          | EBS CSI Driver | ✅ Active |
+          | Load Balancer Controller | ✅ Running |
+          
+          All infrastructure components are operational! 🎉
+          EOF

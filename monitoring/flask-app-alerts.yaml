@@ -1,0 +1,235 @@
+# Flask App Custom Alerts for Prometheus
+# Apply with: kubectl apply -f flask-app-alerts.yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flask-app-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus-stack-prometheus
+    role: alert-rules
+    app: flask-app
+spec:
+  groups:
+  
+  # Flask Application Alerts
+  - name: flask-app-availability
+    interval: 30s
+    rules:
+    
+    # Alert if flask-app pod is down
+    - alert: FlaskAppPodDown
+      expr: up{job=~".*flask-app.*"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "Flask app pod is down"
+        description: "Flask app pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been down for more than 5 minutes"
+        runbook_url: "https://wiki.example.com/runbooks/flask-app-down"
+    
+    # Alert if no flask-app pods are running
+    - alert: FlaskAppNoPodsRunning
+      expr: sum(kube_pod_status_phase{namespace="default",pod=~"flask-app.*",phase="Running"}) == 0
+      for: 3m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "No Flask app pods running"
+        description: "All Flask app pods are down or not in Running state for more than 3 minutes"
+    
+    # Alert if pod restarts frequently
+    - alert: FlaskAppHighRestartRate
+      expr: rate(kube_pod_container_status_restarts_total{namespace="default",pod=~"flask-app.*"}[15m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app pod restarting frequently"
+        description: "Pod {{ $labels.pod }} has restarted {{ $value | humanize }} times in the last 15 minutes"
+    
+    # Alert if deployment has fewer replicas than desired
+    - alert: FlaskAppDeploymentReplicasMismatch
+      expr: |
+        kube_deployment_spec_replicas{namespace="default",deployment="flask-app"}
+        !=
+        kube_deployment_status_replicas_available{namespace="default",deployment="flask-app"}
+      for: 10m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app deployment replicas mismatch"
+        description: "Deployment {{ $labels.deployment }} has {{ $value }} available replicas, but {{ $labels.spec_replicas }} are desired"
+  
+  # Resource Usage Alerts
+  - name: flask-app-resources
+    interval: 30s
+    rules:
+    
+    # Alert if CPU usage is high
+    - alert: FlaskAppHighCPUUsage
+      expr: |
+        sum(rate(container_cpu_usage_seconds_total{namespace="default",pod=~"flask-app.*",container="flask"}[5m])) by (pod)
+        /
+        sum(kube_pod_container_resource_limits{namespace="default",pod=~"flask-app.*",container="flask",resource="cpu"}) by (pod)
+        > 0.8
+      for: 10m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app high CPU usage"
+        description: "Pod {{ $labels.pod }} CPU usage is above 80% (current: {{ $value | humanizePercentage }}) for more than 10 minutes"
+    
+    # Alert if memory usage is high
+    - alert: FlaskAppHighMemoryUsage
+      expr: |
+        sum(container_memory_working_set_bytes{namespace="default",pod=~"flask-app.*",container="flask"}) by (pod)
+        /
+        sum(kube_pod_container_resource_limits{namespace="default",pod=~"flask-app.*",container="flask",resource="memory"}) by (pod)
+        > 0.9
+      for: 10m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app high memory usage"
+        description: "Pod {{ $labels.pod }} memory usage is above 90% (current: {{ $value | humanizePercentage }}) for more than 10 minutes"
+    
+    # Alert if pod is being throttled
+    - alert: FlaskAppCPUThrottling
+      expr: |
+        rate(container_cpu_cfs_throttled_seconds_total{namespace="default",pod=~"flask-app.*",container="flask"}[5m])
+        > 0.5
+      for: 10m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app CPU throttling"
+        description: "Pod {{ $labels.pod }} is being CPU throttled ({{ $value | humanize }}s/s) for more than 10 minutes"
+  
+  # Storage Alerts
+  - name: flask-app-storage
+    interval: 60s
+    rules:
+    
+    # Alert if PVC is almost full
+    - alert: FlaskAppPVCAlmostFull
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes{namespace="default",persistentvolumeclaim=~"flask-app.*"}
+          /
+          kubelet_volume_stats_capacity_bytes{namespace="default",persistentvolumeclaim=~"flask-app.*"}
+        ) > 0.85
+      for: 15m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app PVC almost full"
+        description: "PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+    
+    # Alert if PVC is critically full
+    - alert: FlaskAppPVCCriticallyFull
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes{namespace="default",persistentvolumeclaim=~"flask-app.*"}
+          /
+          kubelet_volume_stats_capacity_bytes{namespace="default",persistentvolumeclaim=~"flask-app.*"}
+        ) > 0.95
+      for: 5m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "Flask app PVC critically full"
+        description: "PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full - immediate action required"
+  
+  # Network Alerts
+  - name: flask-app-network
+    interval: 30s
+    rules:
+    
+    # Alert if pod has high network errors
+    - alert: FlaskAppHighNetworkErrors
+      expr: |
+        rate(container_network_transmit_errors_total{namespace="default",pod=~"flask-app.*"}[5m])
+        +
+        rate(container_network_receive_errors_total{namespace="default",pod=~"flask-app.*"}[5m])
+        > 10
+      for: 5m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app high network errors"
+        description: "Pod {{ $labels.pod }} has {{ $value | humanize }} network errors/s"
+  
+  # Service/Endpoint Alerts
+  - name: flask-app-service
+    interval: 30s
+    rules:
+    
+    # Alert if service has no endpoints
+    - alert: FlaskAppServiceNoEndpoints
+      expr: |
+        sum(kube_endpoint_address_available{namespace="default",endpoint="flask-svc"}) == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "Flask app service has no endpoints"
+        description: "Service flask-svc has no available endpoints for more than 5 minutes"
+    
+    # Alert if ingress is not available
+    - alert: FlaskAppIngressDown
+      expr: |
+        kube_ingress_created{namespace="default",ingress="flask-alb"} == 0
+      for: 5m
+      labels:
+        severity: warning
+        component: flask-app
+      annotations:
+        summary: "Flask app ingress not available"
+        description: "Ingress flask-alb is not available"
+  
+  # Health Check Alerts (if /metrics endpoint exists)
+  - name: flask-app-health
+    interval: 30s
+    rules:
+    
+    # Alert if health check is failing
+    - alert: FlaskAppHealthCheckFailing
+      expr: |
+        probe_success{job="flask-app-health"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "Flask app health check failing"
+        description: "Health check for {{ $labels.instance }} has been failing for more than 5 minutes"
+  
+  # Database Alerts (SQLite)
+  - name: flask-app-database
+    interval: 60s
+    rules:
+    
+    # Alert if database PVC is having issues
+    - alert: FlaskAppDatabasePVCIssue
+      expr: |
+        kube_persistentvolumeclaim_status_phase{namespace="default",persistentvolumeclaim="flask-app-db-pvc",phase!="Bound"} == 1
+      for: 5m
+      labels:
+        severity: critical
+        component: flask-app
+      annotations:
+        summary: "Flask app database PVC not bound"
+        description: "Database PVC flask-app-db-pvc is not in Bound state"
